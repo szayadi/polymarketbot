@@ -1,12 +1,10 @@
-"""Adaptive learning engine.
+"""Adaptive learning engine for the Kalshi trading bot.
 
-Tracks every trade outcome and builds a statistical model of what works.
-Adjusts strategy parameters dynamically based on rolling performance.
-
-The learner answers three questions:
-  1. Should I trade this market? (market scoring)
-  2. How much should I bet? (confidence-weighted sizing)
-  3. Should I change my thresholds? (parameter adaptation)
+Tracks every trade outcome and adjusts strategy behavior:
+- Scores strategies, categories, and price ranges by win rate
+- Adjusts edge requirements based on prediction calibration
+- Scales position sizes by confidence
+- Blacklists consistently losing categories/price ranges
 """
 
 import json
@@ -14,351 +12,241 @@ import logging
 import math
 import os
 from collections import defaultdict
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 LEARN_FILE = os.path.join(os.path.dirname(__file__), "learned.json")
-
-# Minimum trades before the learner starts influencing decisions
 MIN_TRADES_FOR_CONFIDENCE = 5
-
-# How fast old data decays (0 = no decay, 1 = forget everything)
-# 0.05 = recent trades weigh ~5% more per trade than old ones
 DECAY_RATE = 0.05
-
-# Blacklist threshold: if win rate drops below this, avoid the category
 BLACKLIST_WIN_RATE = 0.30
 
 
 @dataclass
 class TradeRecord:
-    """A single completed trade for learning."""
     timestamp: str
     strategy: str
-    market_id: str
-    token_id: str
-    side: str               # "YES" or "NO"
-    entry_price: float
-    exit_price: float       # 1.0 if resolved in our favor, 0.0 if against
-    size: float
-    pnl: float              # realized profit/loss
-    edge_predicted: float   # edge we expected when entering
-    edge_actual: float      # actual edge realized
-    category: str           # market category (sports, politics, etc.)
+    ticker: str
+    event_ticker: str
+    side: str
+    entry_price_cents: int
+    exit_price_cents: int
+    count: int
+    pnl_cents: int
+    edge_predicted: float
+    edge_actual: float
+    category: str
+    series_ticker: str
     question: str
-    price_range: str        # bucketed: "0-20", "20-40", "40-60", "60-80", "80-100"
-    spread_at_entry: float  # bid-ask spread when we entered
-    liquidity_at_entry: float
-    won: bool               # did the trade make money?
+    price_bucket: str       # "0-20", "20-40", "40-60", "60-80", "80-100"
+    won: bool
 
 
 @dataclass
 class StrategyStats:
-    """Rolling statistics for a strategy."""
     total_trades: int = 0
     wins: int = 0
     losses: int = 0
-    total_pnl: float = 0.0
+    total_pnl_cents: int = 0
     avg_edge_predicted: float = 0.0
     avg_edge_actual: float = 0.0
     win_rate: float = 0.0
-    # Weighted stats (recent trades matter more)
     weighted_win_rate: float = 0.0
     weighted_avg_pnl: float = 0.0
 
 
-@dataclass
-class CategoryStats:
-    """Performance by market category."""
-    total_trades: int = 0
-    wins: int = 0
-    win_rate: float = 0.0
-    total_pnl: float = 0.0
-    blacklisted: bool = False
-
-
-@dataclass
-class PriceRangeStats:
-    """Performance by entry price range."""
-    total_trades: int = 0
-    wins: int = 0
-    win_rate: float = 0.0
-    avg_pnl: float = 0.0
-
-
 class AdaptiveLearner:
-    """Learns from trade outcomes and adjusts strategy behavior."""
+    """Learns from outcomes and adjusts strategy parameters."""
 
     def __init__(self, learn_path: str = LEARN_FILE):
         self.learn_path = learn_path
         self.trades: list[TradeRecord] = []
-
-        # Aggregated stats
-        self.strategy_stats: dict[str, StrategyStats] = defaultdict(StrategyStats)
-        self.category_stats: dict[str, CategoryStats] = defaultdict(CategoryStats)
-        self.price_range_stats: dict[str, dict[str, PriceRangeStats]] = defaultdict(
-            lambda: defaultdict(PriceRangeStats)
-        )
-
-        # Learned parameter adjustments
-        self.edge_multipliers: dict[str, float] = {}  # strategy -> multiplier
-        self.size_multipliers: dict[str, float] = {}   # strategy -> multiplier
-
+        self.strategy_stats: dict[str, StrategyStats] = {}
+        self.category_blacklist: set[str] = set()
+        self.price_bucket_win_rates: dict[str, dict[str, float]] = {}
+        self.edge_multipliers: dict[str, float] = {}
+        self.size_multipliers: dict[str, float] = {}
         self.load()
 
-    # ── Recording outcomes ───────────────────────────────────────
-
-    def record_trade(self, strategy: str, market_id: str, token_id: str,
-                     side: str, entry_price: float, exit_price: float,
-                     size: float, pnl: float, edge_predicted: float,
-                     category: str = "", question: str = "",
-                     spread_at_entry: float = 0.0,
-                     liquidity_at_entry: float = 0.0) -> None:
-        """Record a completed trade outcome for learning."""
-        won = pnl > 0
-        edge_actual = (exit_price - entry_price) / entry_price if entry_price > 0 else 0
-        price_range = self._price_bucket(entry_price)
+    def record_trade(self, strategy: str, ticker: str, event_ticker: str,
+                     side: str, entry_price_cents: int, exit_price_cents: int,
+                     count: int, pnl_cents: int, edge_predicted: float,
+                     category: str = "", series_ticker: str = "",
+                     question: str = "") -> None:
+        """Record a completed trade for learning."""
+        won = pnl_cents > 0
+        edge_actual = 0.0
+        if entry_price_cents > 0:
+            edge_actual = (exit_price_cents - entry_price_cents) / entry_price_cents
 
         record = TradeRecord(
             timestamp=datetime.now(timezone.utc).isoformat(),
             strategy=strategy,
-            market_id=market_id,
-            token_id=token_id,
+            ticker=ticker,
+            event_ticker=event_ticker,
             side=side,
-            entry_price=entry_price,
-            exit_price=exit_price,
-            size=size,
-            pnl=pnl,
+            entry_price_cents=entry_price_cents,
+            exit_price_cents=exit_price_cents,
+            count=count,
+            pnl_cents=pnl_cents,
             edge_predicted=edge_predicted,
             edge_actual=edge_actual,
             category=category,
+            series_ticker=series_ticker,
             question=question,
-            price_range=price_range,
-            spread_at_entry=spread_at_entry,
-            liquidity_at_entry=liquidity_at_entry,
+            price_bucket=self._price_bucket(entry_price_cents),
             won=won,
         )
         self.trades.append(record)
+        logger.info("[learner] %s %s %s pnl=%dc (pred=%.1f%% actual=%.1f%%)",
+                    strategy, "WIN" if won else "LOSS", ticker,
+                    pnl_cents, edge_predicted * 100, edge_actual * 100)
 
-        logger.info("[learner] Recorded: %s %s %s pnl=%.4f (predicted=%.2f%% actual=%.2f%%)",
-                    strategy, "WIN" if won else "LOSS", market_id[:12],
-                    pnl, edge_predicted * 100, edge_actual * 100)
-
-        # Recompute stats
-        self._recompute_stats()
-        self._adapt_parameters()
+        self._recompute()
         self.save()
 
-    # ── Querying learned intelligence ────────────────────────────
-
     def should_trade(self, strategy: str, category: str = "",
-                     price: float = 0.0) -> tuple[bool, str]:
-        """Should we take this trade based on historical performance?
-
-        Returns (should_trade, reason).
-        """
-        # Not enough data yet — allow all trades
+                     price_cents: int = 0) -> tuple[bool, str]:
+        """Should we take this trade based on history?"""
         stats = self.strategy_stats.get(strategy)
         if not stats or stats.total_trades < MIN_TRADES_FOR_CONFIDENCE:
-            return True, "insufficient data — allowing trade"
+            return True, "insufficient data"
 
-        # Check if category is blacklisted
-        if category:
-            cat_stats = self.category_stats.get(category)
-            if cat_stats and cat_stats.blacklisted:
-                return False, (f"category '{category}' blacklisted "
-                               f"(win rate {cat_stats.win_rate:.0%})")
+        if category and category in self.category_blacklist:
+            return False, f"category '{category}' blacklisted"
 
-        # Check if this price range is historically bad for this strategy
-        price_range = self._price_bucket(price)
-        pr_stats = self.price_range_stats.get(strategy, {}).get(price_range)
-        if (pr_stats and pr_stats.total_trades >= MIN_TRADES_FOR_CONFIDENCE
-                and pr_stats.win_rate < BLACKLIST_WIN_RATE):
-            return False, (f"price range {price_range} has {pr_stats.win_rate:.0%} "
-                           f"win rate for {strategy}")
+        bucket = self._price_bucket(price_cents)
+        bucket_rates = self.price_bucket_win_rates.get(strategy, {})
+        bucket_data = bucket_rates.get(bucket)
+        if bucket_data is not None and bucket_data < BLACKLIST_WIN_RATE:
+            return False, f"price bucket {bucket} win rate {bucket_data:.0%}"
 
-        # Check if strategy overall is performing badly
         if (stats.weighted_win_rate < BLACKLIST_WIN_RATE
                 and stats.total_trades >= MIN_TRADES_FOR_CONFIDENCE * 2):
-            return False, (f"strategy {strategy} weighted win rate "
-                           f"{stats.weighted_win_rate:.0%} below threshold")
+            return False, f"strategy win rate {stats.weighted_win_rate:.0%}"
 
-        return True, "trade approved by learner"
+        return True, "approved"
 
     def get_edge_multiplier(self, strategy: str) -> float:
-        """Get the learned edge requirement multiplier.
-
-        > 1.0 = require more edge (strategy has been overconfident)
-        < 1.0 = require less edge (strategy has been too conservative)
-        Default: 1.0
-        """
         return self.edge_multipliers.get(strategy, 1.0)
 
     def get_size_multiplier(self, strategy: str) -> float:
-        """Get the learned position size multiplier.
-
-        Scales bet size based on strategy confidence.
-        High win rate + good calibration → bet more.
-        Low win rate → bet less.
-        Default: 1.0
-        """
         return self.size_multipliers.get(strategy, 1.0)
 
     def get_report(self) -> str:
-        """Human-readable performance report."""
-        lines = ["=== Learner Report ==="]
-        lines.append(f"Total trades recorded: {len(self.trades)}")
-
+        lines = [f"=== Learner: {len(self.trades)} trades ==="]
         for name, stats in self.strategy_stats.items():
-            lines.append(f"\n[{name}]")
-            lines.append(f"  Trades: {stats.total_trades} "
-                         f"(W:{stats.wins} L:{stats.losses})")
-            lines.append(f"  Win rate: {stats.win_rate:.0%} "
-                         f"(weighted: {stats.weighted_win_rate:.0%})")
-            lines.append(f"  Total P&L: ${stats.total_pnl:+.4f}")
-            lines.append(f"  Avg predicted edge: {stats.avg_edge_predicted:.2%}")
-            lines.append(f"  Avg actual edge: {stats.avg_edge_actual:.2%}")
-            mult_e = self.edge_multipliers.get(name, 1.0)
-            mult_s = self.size_multipliers.get(name, 1.0)
-            lines.append(f"  Edge multiplier: {mult_e:.2f}x "
-                         f"| Size multiplier: {mult_s:.2f}x")
-
-        if self.category_stats:
-            lines.append("\n[Categories]")
-            for cat, cs in sorted(self.category_stats.items()):
-                flag = " BLACKLISTED" if cs.blacklisted else ""
-                lines.append(f"  {cat}: {cs.total_trades} trades, "
-                             f"{cs.win_rate:.0%} win rate, "
-                             f"${cs.total_pnl:+.4f}{flag}")
-
+            em = self.edge_multipliers.get(name, 1.0)
+            sm = self.size_multipliers.get(name, 1.0)
+            lines.append(
+                f"  [{name}] {stats.total_trades} trades | "
+                f"W:{stats.wins} L:{stats.losses} | "
+                f"WR:{stats.win_rate:.0%} (wt:{stats.weighted_win_rate:.0%}) | "
+                f"PnL:{stats.total_pnl_cents}c | "
+                f"edge_mult:{em:.2f} size_mult:{sm:.2f}"
+            )
+        if self.category_blacklist:
+            lines.append(f"  Blacklisted: {self.category_blacklist}")
         return "\n".join(lines)
 
-    # ── Internal computation ─────────────────────────────────────
+    def _recompute(self) -> None:
+        self.strategy_stats = {}
+        cat_stats: dict[str, dict] = defaultdict(lambda: {"wins": 0, "total": 0})
+        bucket_stats: dict[str, dict[str, dict]] = defaultdict(
+            lambda: defaultdict(lambda: {"wins": 0, "total": 0})
+        )
 
-    def _recompute_stats(self) -> None:
-        """Recompute all aggregate statistics from trade records."""
-        # Reset
-        self.strategy_stats = defaultdict(StrategyStats)
-        self.category_stats = defaultdict(CategoryStats)
-        self.price_range_stats = defaultdict(lambda: defaultdict(PriceRangeStats))
+        for i, t in enumerate(self.trades):
+            weight = math.exp(DECAY_RATE * (i - len(self.trades)))
 
-        for i, trade in enumerate(self.trades):
-            weight = math.exp(DECAY_RATE * (i - len(self.trades)))  # recent = higher
-
-            # Strategy stats
-            ss = self.strategy_stats[trade.strategy]
+            if t.strategy not in self.strategy_stats:
+                self.strategy_stats[t.strategy] = StrategyStats()
+            ss = self.strategy_stats[t.strategy]
             ss.total_trades += 1
-            if trade.won:
+            if t.won:
                 ss.wins += 1
             else:
                 ss.losses += 1
-            ss.total_pnl += trade.pnl
-            ss.weighted_win_rate += weight * (1.0 if trade.won else 0.0)
-            ss.weighted_avg_pnl += weight * trade.pnl
+            ss.total_pnl_cents += t.pnl_cents
+            ss.weighted_win_rate += weight * (1.0 if t.won else 0.0)
+            ss.weighted_avg_pnl += weight * t.pnl_cents
 
-            # Category stats
-            if trade.category:
-                cs = self.category_stats[trade.category]
-                cs.total_trades += 1
-                if trade.won:
-                    cs.wins += 1
-                cs.total_pnl += trade.pnl
+            if t.category:
+                cat_stats[t.category]["total"] += 1
+                if t.won:
+                    cat_stats[t.category]["wins"] += 1
 
-            # Price range stats
-            pr = self.price_range_stats[trade.strategy][trade.price_range]
-            pr.total_trades += 1
-            if trade.won:
-                pr.wins += 1
+            bucket_stats[t.strategy][t.price_bucket]["total"] += 1
+            if t.won:
+                bucket_stats[t.strategy][t.price_bucket]["wins"] += 1
 
         # Normalize
         for name, ss in self.strategy_stats.items():
             if ss.total_trades > 0:
                 ss.win_rate = ss.wins / ss.total_trades
-                ss.avg_edge_predicted = sum(
-                    t.edge_predicted for t in self.trades if t.strategy == name
-                ) / ss.total_trades
-                ss.avg_edge_actual = sum(
-                    t.edge_actual for t in self.trades if t.strategy == name
-                ) / ss.total_trades
+                strat_trades = [t for t in self.trades if t.strategy == name]
+                ss.avg_edge_predicted = sum(t.edge_predicted for t in strat_trades) / len(strat_trades)
+                ss.avg_edge_actual = sum(t.edge_actual for t in strat_trades) / len(strat_trades)
+                total_w = sum(math.exp(DECAY_RATE * (i - len(self.trades)))
+                              for i, t in enumerate(self.trades) if t.strategy == name)
+                if total_w > 0:
+                    ss.weighted_win_rate /= total_w
+                    ss.weighted_avg_pnl /= total_w
 
-                # Normalize weighted stats
-                total_weight = sum(
-                    math.exp(DECAY_RATE * (i - len(self.trades)))
-                    for i, t in enumerate(self.trades) if t.strategy == name
-                )
-                if total_weight > 0:
-                    ss.weighted_win_rate /= total_weight
-                    ss.weighted_avg_pnl /= total_weight
+        # Category blacklist
+        self.category_blacklist = set()
+        for cat, data in cat_stats.items():
+            if data["total"] >= MIN_TRADES_FOR_CONFIDENCE:
+                wr = data["wins"] / data["total"]
+                if wr < BLACKLIST_WIN_RATE:
+                    self.category_blacklist.add(cat)
 
-        for cat, cs in self.category_stats.items():
-            if cs.total_trades > 0:
-                cs.win_rate = cs.wins / cs.total_trades
-                cs.blacklisted = (cs.win_rate < BLACKLIST_WIN_RATE
-                                  and cs.total_trades >= MIN_TRADES_FOR_CONFIDENCE)
+        # Price bucket win rates
+        self.price_bucket_win_rates = {}
+        for strat, buckets in bucket_stats.items():
+            self.price_bucket_win_rates[strat] = {}
+            for bucket, data in buckets.items():
+                if data["total"] >= MIN_TRADES_FOR_CONFIDENCE:
+                    self.price_bucket_win_rates[strat][bucket] = (
+                        data["wins"] / data["total"]
+                    )
 
-        for strat, ranges in self.price_range_stats.items():
-            for pr_name, pr in ranges.items():
-                if pr.total_trades > 0:
-                    pr.win_rate = pr.wins / pr.total_trades
-                    relevant = [t for t in self.trades
-                                if t.strategy == strat and t.price_range == pr_name]
-                    pr.avg_pnl = sum(t.pnl for t in relevant) / len(relevant)
-
-    def _adapt_parameters(self) -> None:
-        """Adjust strategy parameters based on learned performance."""
-        for name, stats in self.strategy_stats.items():
-            if stats.total_trades < MIN_TRADES_FOR_CONFIDENCE:
+        # Adapt multipliers
+        for name, ss in self.strategy_stats.items():
+            if ss.total_trades < MIN_TRADES_FOR_CONFIDENCE:
                 continue
-
-            # Edge multiplier: if we're consistently overestimating edge,
-            # require more edge before trading
-            if stats.avg_edge_predicted > 0 and stats.avg_edge_actual != 0:
-                calibration = stats.avg_edge_actual / stats.avg_edge_predicted
-                # Clamp between 0.5x and 2.0x
-                # If calibration < 1: we overestimate → need higher edge → multiplier > 1
-                # If calibration > 1: we underestimate → can accept lower edge → multiplier < 1
-                raw_mult = 1.0 / max(calibration, 0.01)
-                self.edge_multipliers[name] = max(0.5, min(2.0, raw_mult))
+            # Edge multiplier
+            if ss.avg_edge_predicted > 0 and ss.avg_edge_actual != 0:
+                cal = ss.avg_edge_actual / ss.avg_edge_predicted
+                self.edge_multipliers[name] = max(0.5, min(2.0, 1.0 / max(cal, 0.01)))
             else:
                 self.edge_multipliers[name] = 1.0
-
-            # Size multiplier: scale bet size by win rate confidence
-            # High win rate → bet up to 1.5x
-            # Low win rate → shrink to 0.3x
-            if stats.weighted_win_rate >= 0.7:
-                self.size_multipliers[name] = min(1.5, 0.5 + stats.weighted_win_rate)
-            elif stats.weighted_win_rate >= 0.5:
+            # Size multiplier
+            wr = ss.weighted_win_rate
+            if wr >= 0.7:
+                self.size_multipliers[name] = min(1.5, 0.5 + wr)
+            elif wr >= 0.5:
                 self.size_multipliers[name] = 1.0
-            elif stats.weighted_win_rate >= 0.3:
+            elif wr >= 0.3:
                 self.size_multipliers[name] = 0.6
             else:
                 self.size_multipliers[name] = 0.3
 
-            logger.info("[learner] %s: win_rate=%.0f%% edge_mult=%.2f size_mult=%.2f",
-                        name, stats.weighted_win_rate * 100,
-                        self.edge_multipliers[name], self.size_multipliers[name])
-
     @staticmethod
-    def _price_bucket(price: float) -> str:
-        """Bucket a price into a range for analysis."""
-        if price <= 0.20:
+    def _price_bucket(price_cents: int) -> str:
+        if price_cents <= 20:
             return "0-20"
-        elif price <= 0.40:
+        elif price_cents <= 40:
             return "20-40"
-        elif price <= 0.60:
+        elif price_cents <= 60:
             return "40-60"
-        elif price <= 0.80:
+        elif price_cents <= 80:
             return "60-80"
         else:
             return "80-100"
 
-    # ── Persistence ──────────────────────────────────────────────
-
     def save(self) -> None:
-        """Persist learned data to JSON."""
         data = {
             "trades": [asdict(t) for t in self.trades],
             "edge_multipliers": self.edge_multipliers,
@@ -371,7 +259,6 @@ class AdaptiveLearner:
             logger.error("Failed to save learned data: %s", e)
 
     def load(self) -> None:
-        """Load learned data from JSON."""
         if not os.path.exists(self.learn_path):
             return
         try:
@@ -380,7 +267,7 @@ class AdaptiveLearner:
             self.trades = [TradeRecord(**t) for t in data.get("trades", [])]
             self.edge_multipliers = data.get("edge_multipliers", {})
             self.size_multipliers = data.get("size_multipliers", {})
-            self._recompute_stats()
-            logger.info("Loaded %d trade records from learned data", len(self.trades))
+            self._recompute()
+            logger.info("Loaded %d trade records", len(self.trades))
         except Exception as e:
             logger.error("Failed to load learned data: %s", e)

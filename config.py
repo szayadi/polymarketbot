@@ -1,4 +1,4 @@
-"""Configuration loader for the Polymarket trading bot."""
+"""Configuration loader for the Kalshi trading bot."""
 
 import os
 from dataclasses import dataclass
@@ -6,30 +6,43 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+KALSHI_PROD_URL = "https://api.elections.kalshi.com/trade-api/v2"
+KALSHI_DEMO_URL = "https://demo-api.kalshi.co/trade-api/v2"
+KALSHI_PROD_WS = "wss://api.elections.kalshi.com/trade-api/ws/v2"
+KALSHI_DEMO_WS = "wss://demo-api.kalshi.co/trade-api/ws/v2"
+
 
 @dataclass
 class Config:
-    private_key: str = os.getenv("PRIVATE_KEY", "")
-    chain_id: int = int(os.getenv("CHAIN_ID", "137"))
-    clob_url: str = os.getenv("CLOB_URL", "https://clob.polymarket.com")
-    gamma_url: str = os.getenv("GAMMA_URL", "https://gamma-api.polymarket.com")
+    api_key_id: str = os.getenv("KALSHI_API_KEY_ID", "")
+    private_key_path: str = os.getenv("KALSHI_PRIVATE_KEY_PATH", "./private_key.pem")
+    env: str = os.getenv("KALSHI_ENV", "demo")
 
     bankroll: float = float(os.getenv("BANKROLL", "10.0"))
     max_bet_fraction: float = float(os.getenv("MAX_BET_FRACTION", "0.05"))
     min_edge: float = float(os.getenv("MIN_EDGE", "0.03"))
 
     # Risk management
-    daily_loss_cap_pct: float = float(os.getenv("DAILY_LOSS_CAP_PCT", "0.20"))
-    cash_reserve_pct: float = float(os.getenv("CASH_RESERVE_PCT", "0.30"))
-    max_market_exposure_pct: float = float(os.getenv("MAX_MARKET_EXPOSURE_PCT", "0.20"))
+    daily_loss_cap_pct: float = float(os.getenv("DAILY_LOSS_CAP_PCT", "0.15"))
+    cash_reserve_pct: float = float(os.getenv("CASH_RESERVE_PCT", "0.40"))
+    max_market_exposure_pct: float = float(os.getenv("MAX_MARKET_EXPOSURE_PCT", "0.15"))
+    survival_floor: float = float(os.getenv("SURVIVAL_FLOOR", "1.00"))
 
     # Strategy toggles
-    strategy_no_bets: bool = os.getenv("STRATEGY_NO_BETS", "1") == "1"
-    strategy_arbitrage: bool = os.getenv("STRATEGY_ARBITRAGE", "1") == "1"
+    strategy_dutch_book: bool = os.getenv("STRATEGY_DUTCH_BOOK", "1") == "1"
+    strategy_tail_bets: bool = os.getenv("STRATEGY_TAIL_BETS", "1") == "1"
     strategy_spread: bool = os.getenv("STRATEGY_SPREAD", "1") == "1"
 
     poll_interval: int = int(os.getenv("POLL_INTERVAL", "30"))
     dry_run: bool = os.getenv("DRY_RUN", "1") == "1"
+
+    @property
+    def base_url(self) -> str:
+        return KALSHI_PROD_URL if self.env == "production" else KALSHI_DEMO_URL
+
+    @property
+    def ws_url(self) -> str:
+        return KALSHI_PROD_WS if self.env == "production" else KALSHI_DEMO_WS
 
     @property
     def max_bet_size(self) -> float:

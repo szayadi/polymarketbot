@@ -1,9 +1,9 @@
-"""Position tracker with JSON persistence."""
+"""Position tracker with JSON persistence for the Kalshi bot."""
 
 import json
 import logging
 import os
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -14,33 +14,39 @@ STATE_FILE = os.path.join(os.path.dirname(__file__), "state.json")
 
 @dataclass
 class Position:
-    market_id: str          # condition_id
-    token_id: str           # YES or NO token
-    side: str               # "YES" or "NO"
-    entry_price: float      # price paid per share
-    size: float             # number of shares
-    current_price: float    # latest market price
+    ticker: str             # Kalshi market ticker
+    event_ticker: str       # Parent event
+    side: str               # "yes" or "no"
+    action: str             # "buy" or "sell"
+    entry_price_cents: int  # Price paid per contract in cents
+    count: int              # Number of contracts
+    current_price_cents: int  # Latest market price in cents
     timestamp: str          # ISO timestamp of entry
-    strategy: str           # which strategy opened this
-    order_id: str = ""      # CLOB order ID (empty for dry-run)
-    status: str = "open"    # "pending" | "open" | "closed"
-    pnl: float = 0.0       # realized P&L (0 until closed)
-    close_price: float = 0.0
-    question: str = ""      # human-readable market question
+    strategy: str           # Which strategy opened this
+    order_id: str = ""      # Kalshi order ID
+    status: str = "open"    # "open" | "closed"
+    pnl_cents: int = 0      # Realized P&L in cents
+    exit_price_cents: int = 0
+    question: str = ""      # Market question for logging
+    edge_predicted: float = 0.0  # Edge we expected
 
     @property
-    def unrealized_pnl(self) -> float:
-        """Unrealized P&L based on current price."""
-        if self.side == "NO":
-            # Bought NO at entry_price, current NO price = 1 - current_yes_price
-            return (self.current_price - self.entry_price) * self.size
-        else:
-            return (self.current_price - self.entry_price) * self.size
+    def cost_cents(self) -> int:
+        """Total cost of this position in cents."""
+        return self.entry_price_cents * self.count
 
     @property
-    def cost_basis(self) -> float:
-        """Total cost of this position."""
-        return self.entry_price * self.size
+    def cost_dollars(self) -> float:
+        return self.cost_cents / 100.0
+
+    @property
+    def unrealized_pnl_cents(self) -> int:
+        """Unrealized P&L in cents."""
+        return (self.current_price_cents - self.entry_price_cents) * self.count
+
+    @property
+    def unrealized_pnl_dollars(self) -> float:
+        return self.unrealized_pnl_cents / 100.0
 
 
 class PositionTracker:
@@ -49,81 +55,86 @@ class PositionTracker:
     def __init__(self, state_path: str = STATE_FILE):
         self.state_path = state_path
         self.positions: list[Position] = []
-        self.daily_realized_pnl: float = 0.0
+        self.daily_realized_pnl_cents: int = 0
         self.pnl_date: str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         self.load()
 
     def add(self, position: Position) -> None:
-        """Add a new position."""
         self.positions.append(position)
-        logger.info("Position opened: %s %s @ %.4f x%.2f [%s]",
-                     position.side, position.token_id[:12],
-                     position.entry_price, position.size, position.strategy)
+        logger.info("Position opened: %s %s %s @%dc x%d [%s]",
+                     position.action, position.side, position.ticker,
+                     position.entry_price_cents, position.count,
+                     position.strategy)
         self.save()
 
-    def close(self, market_id: str, realized_pnl: float,
-              close_price: float = 0.0) -> None:
-        """Close a position by market_id."""
+    def close(self, ticker: str, pnl_cents: int,
+              exit_price_cents: int = 0) -> None:
         for pos in self.positions:
-            if pos.market_id == market_id and pos.status == "open":
+            if pos.ticker == ticker and pos.status == "open":
                 pos.status = "closed"
-                pos.pnl = realized_pnl
-                pos.close_price = close_price
-                self._add_daily_pnl(realized_pnl)
-                logger.info("Position closed: %s PnL=%.4f",
-                            market_id[:12], realized_pnl)
+                pos.pnl_cents = pnl_cents
+                pos.exit_price_cents = exit_price_cents
+                self._add_daily_pnl(pnl_cents)
+                logger.info("Position closed: %s PnL=%dc ($%.2f)",
+                            ticker, pnl_cents, pnl_cents / 100.0)
                 break
         self.save()
 
-    def update_price(self, token_id: str, new_price: float) -> None:
-        """Update current price for a position."""
+    def update_price(self, ticker: str, new_price_cents: int) -> None:
         for pos in self.positions:
-            if pos.token_id == token_id and pos.status == "open":
-                pos.current_price = new_price
+            if pos.ticker == ticker and pos.status == "open":
+                pos.current_price_cents = new_price_cents
 
     def get_open(self) -> list[Position]:
-        """Get all open positions."""
         return [p for p in self.positions if p.status == "open"]
 
     def get_open_by_strategy(self, strategy: str) -> list[Position]:
-        """Get open positions for a specific strategy."""
         return [p for p in self.positions
                 if p.status == "open" and p.strategy == strategy]
 
-    def get_exposure(self) -> float:
-        """Total capital locked in open positions."""
-        return sum(p.cost_basis for p in self.get_open())
+    def get_exposure_cents(self) -> int:
+        """Total capital locked in open positions (cents)."""
+        return sum(p.cost_cents for p in self.get_open())
 
-    def get_market_exposure(self, market_id: str) -> float:
-        """Total capital in a specific market."""
-        return sum(p.cost_basis for p in self.get_open()
-                   if p.market_id == market_id)
+    def get_exposure_dollars(self) -> float:
+        return self.get_exposure_cents() / 100.0
 
-    def get_daily_pnl(self) -> float:
-        """Sum of today's realized P&L."""
+    def get_market_exposure_cents(self, ticker: str) -> int:
+        return sum(p.cost_cents for p in self.get_open() if p.ticker == ticker)
+
+    def get_event_exposure_cents(self, event_ticker: str) -> int:
+        return sum(p.cost_cents for p in self.get_open()
+                   if p.event_ticker == event_ticker)
+
+    def has_position(self, ticker: str) -> bool:
+        return any(p.ticker == ticker and p.status == "open"
+                   for p in self.positions)
+
+    def get_daily_pnl_cents(self) -> int:
         self._check_date_rollover()
-        return self.daily_realized_pnl
+        return self.daily_realized_pnl_cents
 
-    def get_total_unrealized_pnl(self) -> float:
-        """Sum of unrealized P&L across open positions."""
-        return sum(p.unrealized_pnl for p in self.get_open())
+    def get_daily_pnl_dollars(self) -> float:
+        return self.get_daily_pnl_cents() / 100.0
 
-    def _add_daily_pnl(self, amount: float) -> None:
+    def get_total_unrealized_pnl_cents(self) -> int:
+        return sum(p.unrealized_pnl_cents for p in self.get_open())
+
+    def _add_daily_pnl(self, cents: int) -> None:
         self._check_date_rollover()
-        self.daily_realized_pnl += amount
+        self.daily_realized_pnl_cents += cents
 
     def _check_date_rollover(self) -> None:
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         if today != self.pnl_date:
-            logger.info("Daily P&L reset (was %.4f)", self.daily_realized_pnl)
-            self.daily_realized_pnl = 0.0
+            logger.info("Daily P&L reset (was %dc)", self.daily_realized_pnl_cents)
+            self.daily_realized_pnl_cents = 0
             self.pnl_date = today
 
     def save(self) -> None:
-        """Persist state to JSON."""
         data = {
             "positions": [asdict(p) for p in self.positions],
-            "daily_realized_pnl": self.daily_realized_pnl,
+            "daily_realized_pnl_cents": self.daily_realized_pnl_cents,
             "pnl_date": self.pnl_date,
         }
         try:
@@ -133,28 +144,26 @@ class PositionTracker:
             logger.error("Failed to save state: %s", e)
 
     def load(self) -> None:
-        """Load state from JSON."""
         if not os.path.exists(self.state_path):
             return
         try:
             with open(self.state_path) as f:
                 data = json.load(f)
             self.positions = [Position(**p) for p in data.get("positions", [])]
-            self.daily_realized_pnl = data.get("daily_realized_pnl", 0.0)
+            self.daily_realized_pnl_cents = data.get("daily_realized_pnl_cents", 0)
             self.pnl_date = data.get("pnl_date", "")
             logger.info("Loaded %d positions from state", len(self.positions))
         except Exception as e:
             logger.error("Failed to load state: %s", e)
 
     def summary(self) -> str:
-        """Human-readable summary."""
         open_pos = self.get_open()
-        exposure = self.get_exposure()
-        unrealized = self.get_total_unrealized_pnl()
-        daily = self.get_daily_pnl()
+        exposure = self.get_exposure_dollars()
+        unrealized = self.get_total_unrealized_pnl_cents() / 100.0
+        daily = self.get_daily_pnl_dollars()
         return (
             f"Positions: {len(open_pos)} open | "
             f"Exposure: ${exposure:.2f} | "
-            f"Unrealized P&L: ${unrealized:+.4f} | "
-            f"Daily realized: ${daily:+.4f}"
+            f"Unrealized: ${unrealized:+.2f} | "
+            f"Daily realized: ${daily:+.2f}"
         )

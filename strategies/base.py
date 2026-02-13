@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from typing import Optional
 
-from client import PolymarketClient
+from client import KalshiClient
 from config import Config
 from learner import AdaptiveLearner
 from positions import Position, PositionTracker
@@ -15,18 +15,11 @@ logger = logging.getLogger(__name__)
 
 
 class BaseStrategy(ABC):
-    """Abstract base for all trading strategies.
-
-    Integrates with the AdaptiveLearner to:
-    - Check if a trade should be taken (learned blacklists, win rates)
-    - Adjust edge requirements based on historical calibration
-    - Scale position sizes based on strategy confidence
-    - Record outcomes for future learning
-    """
+    """Abstract base for all Kalshi trading strategies."""
 
     name: str = "base"
 
-    def __init__(self, client: PolymarketClient, cfg: Config,
+    def __init__(self, client: KalshiClient, cfg: Config,
                  risk: RiskManager, tracker: PositionTracker,
                  learner: Optional[AdaptiveLearner] = None):
         self.client = client
@@ -39,121 +32,99 @@ class BaseStrategy(ABC):
     def scan(self) -> list[dict]:
         """Scan markets and return trade signals.
 
-        Each signal dict should contain:
-            token_id: str       - YES or NO token to trade
-            side: str           - "BUY" or "SELL"
-            price: float        - limit price
-            size: float         - share quantity
-            market_id: str      - condition_id
+        Each signal dict:
+            ticker: str
+            event_ticker: str
+            side: str           - "yes" or "no"
+            action: str         - "buy" or "sell"
+            price_cents: int    - limit price in cents
+            count: int          - contracts
             edge: float         - expected profit margin
-            reason: str         - human-readable explanation
-            question: str       - market question text
-            category: str       - (optional) market category
-            spread: float       - (optional) bid-ask spread at signal time
-            liquidity: float    - (optional) market liquidity
+            reason: str
+            question: str
+            category: str
+            series_ticker: str
         """
 
     def get_min_edge(self) -> float:
-        """Get the effective minimum edge, adjusted by learner.
-
-        If the learner has determined this strategy overestimates edge,
-        it raises the bar. If the strategy is well-calibrated, it may
-        lower it slightly.
-        """
-        base_edge = self.cfg.min_edge
+        """Effective minimum edge, adjusted by learner."""
+        base = self.cfg.min_edge
         if self.learner:
-            multiplier = self.learner.get_edge_multiplier(self.name)
-            adjusted = base_edge * multiplier
-            if multiplier != 1.0:
-                logger.debug("[%s] Edge adjusted: %.2f%% -> %.2f%% (mult=%.2f)",
-                             self.name, base_edge * 100, adjusted * 100, multiplier)
-            return adjusted
-        return base_edge
+            mult = self.learner.get_edge_multiplier(self.name)
+            return base * mult
+        return base
 
-    def get_adjusted_size(self, base_size: float) -> float:
-        """Get position size adjusted by learner confidence.
-
-        High-performing strategies get larger sizes.
-        Struggling strategies get smaller sizes.
-        """
+    def get_adjusted_count(self, count: int) -> int:
+        """Adjust contract count by learner confidence."""
         if self.learner:
-            multiplier = self.learner.get_size_multiplier(self.name)
-            adjusted = base_size * multiplier
-            if multiplier != 1.0:
-                logger.debug("[%s] Size adjusted: %.2f -> %.2f (mult=%.2f)",
-                             self.name, base_size, adjusted, multiplier)
-            return adjusted
-        return base_size
+            mult = self.learner.get_size_multiplier(self.name)
+            return max(1, int(count * mult))
+        return count
 
     def execute(self, signals: list[dict]) -> list[dict]:
-        """Execute signals after risk checks and learner gate. Returns results."""
+        """Execute signals after learner + risk checks."""
         results = []
         for sig in signals:
-            # Learner gate: should we trade this at all?
+            # Learner gate
             if self.learner:
-                should, reason = self.learner.should_trade(
-                    strategy=self.name,
-                    category=sig.get("category", ""),
-                    price=sig["price"],
-                )
-                if not should:
+                ok, reason = self.learner.should_trade(
+                    self.name, sig.get("category", ""), sig["price_cents"])
+                if not ok:
                     logger.info("[%s] LEARNER BLOCKED: %s | %s",
                                 self.name, reason, sig["reason"])
                     continue
 
-            # Adjust size based on learner confidence
-            raw_size = sig["size"]
-            adjusted_size = self.get_adjusted_size(raw_size)
+            # Adjust count
+            count = self.get_adjusted_count(sig["count"])
+            cost_cents = count * sig["price_cents"]
 
             # Risk gate
-            size = self.risk.adjust_size(adjusted_size, sig["market_id"])
-            if size <= 0:
-                logger.info("[%s] SKIP (risk limit): %s", self.name, sig["reason"])
+            count = self.risk.adjust_count(count, sig["price_cents"], sig["ticker"])
+            if count <= 0:
+                logger.info("[%s] SKIP (risk): %s", self.name, sig["reason"])
                 continue
 
-            allowed, deny_reason = self.risk.can_trade(size, sig["market_id"])
-            if not allowed:
-                logger.info("[%s] BLOCKED: %s", self.name, deny_reason)
+            cost_cents = count * sig["price_cents"]
+            ok, deny = self.risk.can_trade(
+                cost_cents, sig["ticker"], sig.get("event_ticker", ""))
+            if not ok:
+                logger.info("[%s] BLOCKED: %s", self.name, deny)
                 continue
 
             # Place order
-            sig["size"] = size
-            if sig["side"] == "BUY":
-                result = self.client.buy(
-                    sig["token_id"], sig["price"], size,
-                    dry_run=self.cfg.dry_run,
-                )
-            else:
-                result = self.client.sell(
-                    sig["token_id"], sig["price"], size,
-                    dry_run=self.cfg.dry_run,
-                )
+            result = self.client.place_order(
+                ticker=sig["ticker"],
+                side=sig["side"],
+                action=sig["action"],
+                count=count,
+                yes_price_cents=sig["price_cents"] if sig["side"] == "yes" else None,
+                no_price_cents=sig["price_cents"] if sig["side"] == "no" else None,
+                dry_run=self.cfg.dry_run,
+            )
 
             if result:
-                # Track position
                 pos = Position(
-                    market_id=sig["market_id"],
-                    token_id=sig["token_id"],
-                    side="NO" if "NO" in sig.get("reason", "").upper() else "YES",
-                    entry_price=sig["price"],
-                    size=size,
-                    current_price=sig["price"],
+                    ticker=sig["ticker"],
+                    event_ticker=sig.get("event_ticker", ""),
+                    side=sig["side"],
+                    action=sig["action"],
+                    entry_price_cents=sig["price_cents"],
+                    count=count,
+                    current_price_cents=sig["price_cents"],
                     timestamp=datetime.now(timezone.utc).isoformat(),
                     strategy=self.name,
                     order_id=result.get("order_id", ""),
-                    status="open",
                     question=sig.get("question", ""),
+                    edge_predicted=sig["edge"],
                 )
                 self.tracker.add(pos)
                 results.append({"signal": sig, "result": result})
 
-                size_note = ""
-                if self.learner and raw_size != size:
-                    size_note = f" (learner: {raw_size:.2f}->{size:.2f})"
-
-                logger.info("[%s] EXECUTED: %s %s @ %.4f x%.2f%s | edge=%.2f%% | %s",
-                            self.name, sig["side"], sig["token_id"][:12],
-                            sig["price"], size, size_note,
-                            sig["edge"] * 100, sig["reason"])
+                logger.info(
+                    "[%s] EXEC: %s %s %s x%d @%dc | edge=%.1f%% | %s",
+                    self.name, sig["action"], sig["side"], sig["ticker"],
+                    count, sig["price_cents"], sig["edge"] * 100,
+                    sig["reason"],
+                )
 
         return results
