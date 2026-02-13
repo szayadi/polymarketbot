@@ -26,6 +26,7 @@ from config import Config
 from client import KalshiClient
 from learner import AdaptiveLearner
 from positions import PositionTracker
+from researcher import MarketResearcher
 from risk import RiskManager
 from strategies.dutch_book import DutchBookStrategy
 from strategies.tail_bets import TailBetsStrategy
@@ -73,6 +74,7 @@ def main():
                 cfg.strategy_spread, cfg.strategy_momentum)
     logger.info("  Cash reserve: %.0f%% | Daily loss cap: %.0f%%",
                 cfg.cash_reserve_pct * 100, cfg.daily_loss_cap_pct * 100)
+    logger.info("  External research: %s", "ENABLED" if cfg.enable_research else "DISABLED")
     logger.info("  Adaptive learning: ENABLED (fast decay)")
     logger.info("=" * 60)
 
@@ -104,18 +106,23 @@ def main():
         logger.info("Learner: %d historical trades", len(learner.trades))
         logger.info("\n%s", learner.get_report())
 
+    # Initialize researcher for external data validation
+    researcher = MarketResearcher() if cfg.enable_research else None
+    if researcher:
+        logger.info("Market researcher loaded (weather, crypto, finance)")
+
     # Build strategy list — priority order
     strategies = []
     momentum_strategy = None
 
     if cfg.strategy_dutch_book:
-        strategies.append(DutchBookStrategy(client, cfg, risk, tracker, learner))
+        strategies.append(DutchBookStrategy(client, cfg, risk, tracker, learner, researcher))
     if cfg.strategy_tail_bets:
-        strategies.append(TailBetsStrategy(client, cfg, risk, tracker, learner))
+        strategies.append(TailBetsStrategy(client, cfg, risk, tracker, learner, researcher))
     if cfg.strategy_spread:
-        strategies.append(SpreadStrategy(client, cfg, risk, tracker, learner))
+        strategies.append(SpreadStrategy(client, cfg, risk, tracker, learner, researcher))
     if cfg.strategy_momentum:
-        momentum_strategy = MomentumStrategy(client, cfg, risk, tracker, learner)
+        momentum_strategy = MomentumStrategy(client, cfg, risk, tracker, learner, researcher)
         strategies.append(momentum_strategy)
 
     if not strategies:

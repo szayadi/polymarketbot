@@ -28,6 +28,7 @@ URGENCY_BOOST_HOURS = 48          # Markets resolving within 48h get a boost
 
 class MomentumStrategy(BaseStrategy):
     name = "momentum"
+    use_research = True  # Validate with external data before betting
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

@@ -42,6 +42,9 @@ class Config:
     poll_interval: int = int(os.getenv("POLL_INTERVAL", "10"))
     dry_run: bool = os.getenv("DRY_RUN", "1") == "1"
 
+    # External research — validate signals with weather/crypto/finance APIs
+    enable_research: bool = os.getenv("ENABLE_RESEARCH", "1") == "1"
+
     @property
     def base_url(self) -> str:
         return KALSHI_PROD_URL if self.env == "production" else KALSHI_DEMO_URL

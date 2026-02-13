@@ -25,6 +25,7 @@ URGENCY_BOOST_HOURS = 24          # Markets within 24h get edge boost
 
 class TailBetsStrategy(BaseStrategy):
     name = "tail_bets"
+    use_research = True  # Validate with weather/crypto/finance data before betting
 
     def scan(self) -> list[dict]:
         """Find markets with near-certain outcomes."""
