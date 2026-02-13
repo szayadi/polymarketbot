@@ -15,13 +15,13 @@ logger = logging.getLogger(__name__)
 
 # ── Aggressive thresholds for fast trading ──
 MIN_PRICE_MOVE_CENTS = 2          # Trigger on 2c moves (was 3)
-MIN_VOLUME_24H = 50               # Lower volume bar (was 100)
+MIN_VOLUME_24H = 10               # Lower volume bar (was 50)
 PROFIT_TARGET_PCT = 0.08          # Take profits at 8% (was 15%)
 STOP_LOSS_PCT = 0.05              # Cut losses at 5% (was 8%)
 TRAILING_STOP_PCT = 0.03          # 3% trailing stop once profitable
 CONSISTENCY_MIN = 0.50            # 50% directional consistency (was 60%)
 MIN_SNAPSHOTS = 2                 # React after just 2 snapshots (was 3)
-VOLUME_FULL_SCORE = 200           # Full volume score at 200 (was 500)
+VOLUME_FULL_SCORE = 100           # Full volume score at 100 (was 200)
 # Time-based urgency: markets resolving sooner get higher edge boost
 URGENCY_BOOST_HOURS = 48          # Markets resolving within 48h get a boost
 
@@ -185,7 +185,7 @@ class MomentumStrategy(BaseStrategy):
             yes_bid, yes_ask = self.client.get_best_bid_ask(ticker)
             if yes_bid is None or yes_ask is None:
                 return "pricing"
-        if yes_bid < 10 or yes_ask > 90:
+        if yes_bid < 5 or yes_ask > 95:
             return "pricing"
         # Store back so _evaluate_market can use them
         market["yes_bid"] = yes_bid
