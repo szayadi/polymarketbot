@@ -64,6 +64,7 @@ class MomentumStrategy(BaseStrategy):
             logger.info("[momentum] PRICE FIELDS: %s", price_fields)
 
         # Filter to tradeable markets first, with rejection counters
+        self._orderbook_fetches = 0  # Reset per-cycle counter
         candidates = []
         reject_status = 0
         reject_time = 0
@@ -176,10 +177,13 @@ class MomentumStrategy(BaseStrategy):
 
         # Need reasonable pricing (avoid deep extremes)
         # Kalshi market listing often returns 0/0 — treat as missing and
-        # fetch from the live orderbook instead
+        # fetch from the live orderbook instead (capped to avoid hanging)
         yes_bid = int(market.get("yes_bid", 0) or 0)
         yes_ask = int(market.get("yes_ask", 0) or 0)
         if yes_bid <= 0 or yes_ask <= 0:
+            if self._orderbook_fetches >= 15:
+                return "pricing"  # Skip — too many fetches this cycle
+            self._orderbook_fetches += 1
             yes_bid, yes_ask = self.client.get_best_bid_ask(ticker)
             if yes_bid is None or yes_ask is None:
                 return "pricing"
