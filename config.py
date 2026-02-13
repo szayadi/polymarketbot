@@ -34,8 +34,8 @@ class Config:
     strategy_spread: bool = os.getenv("STRATEGY_SPREAD", "1") == "1"
     strategy_momentum: bool = os.getenv("STRATEGY_MOMENTUM", "1") == "1"
 
-    # Time filters — AGGRESSIVE: only fast-resolving markets (1-3 days)
-    max_days_to_resolve: int = int(os.getenv("MAX_DAYS_TO_RESOLVE", "3"))
+    # Time filters — fast-resolving markets only (7 days catches daily + weekly)
+    max_days_to_resolve: int = int(os.getenv("MAX_DAYS_TO_RESOLVE", "7"))
     # Minimum 24h volume to consider a market (in contracts)
     min_volume_24h: int = int(os.getenv("MIN_VOLUME_24H", "25"))
 

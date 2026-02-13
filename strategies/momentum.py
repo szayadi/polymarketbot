@@ -47,6 +47,22 @@ class MomentumStrategy(BaseStrategy):
             logger.error("[momentum] Failed to fetch markets: %s", e)
             return signals
 
+        # Debug: log first market's fields so we know what Kalshi returns
+        if markets and not hasattr(self, '_dumped_fields'):
+            self._dumped_fields = True
+            sample = markets[0]
+            logger.info("[momentum] MARKET FIELDS: %s", list(sample.keys()))
+            # Log time-related fields specifically
+            time_fields = {k: v for k, v in sample.items()
+                          if any(t in k.lower() for t in
+                                 ("time", "date", "expir", "close", "settle", "end"))}
+            logger.info("[momentum] TIME FIELDS: %s", time_fields)
+            # Log price fields
+            price_fields = {k: v for k, v in sample.items()
+                           if any(t in k.lower() for t in
+                                  ("bid", "ask", "price", "yes", "no"))}
+            logger.info("[momentum] PRICE FIELDS: %s", price_fields)
+
         # Filter to tradeable markets first
         candidates = []
         for m in markets:
@@ -72,7 +88,8 @@ class MomentumStrategy(BaseStrategy):
     def _resolves_soon(self, market: dict) -> bool:
         """Check if market resolves within our time window."""
         cutoff = datetime.now(timezone.utc) + timedelta(days=self.cfg.max_days_to_resolve)
-        for field in ("expected_expiration_time", "close_time", "latest_expiration_time"):
+        for field in ("expected_expiration_time", "close_time", "latest_expiration_time",
+                      "expiration_time", "end_date_time", "settlement_timer_expiration_time"):
             ts = market.get(field)
             if ts:
                 try:
@@ -89,7 +106,8 @@ class MomentumStrategy(BaseStrategy):
     def _hours_to_resolve(self, market: dict) -> float:
         """Estimate hours until market resolves. Returns 9999 if unknown."""
         now = datetime.now(timezone.utc)
-        for field in ("expected_expiration_time", "close_time", "latest_expiration_time"):
+        for field in ("expected_expiration_time", "close_time", "latest_expiration_time",
+                      "expiration_time", "end_date_time", "settlement_timer_expiration_time"):
             ts = market.get(field)
             if ts:
                 try:
@@ -126,14 +144,21 @@ class MomentumStrategy(BaseStrategy):
             return False
 
         # Need reasonable pricing (avoid deep extremes)
+        # Kalshi market listing may not include bid/ask — fetch from orderbook
         yes_bid = market.get("yes_bid")
         yes_ask = market.get("yes_ask")
-        if yes_bid is None or yes_ask is None:
-            return False
-        yes_bid = int(yes_bid)
-        yes_ask = int(yes_ask)
+        if yes_bid is not None and yes_ask is not None:
+            yes_bid = int(yes_bid)
+            yes_ask = int(yes_ask)
+        else:
+            yes_bid, yes_ask = self.client.get_best_bid_ask(ticker)
+            if yes_bid is None or yes_ask is None:
+                return False
         if yes_bid < 10 or yes_ask > 90:
             return False
+        # Store back so _evaluate_market can use them
+        market["yes_bid"] = yes_bid
+        market["yes_ask"] = yes_ask
 
         return True
 

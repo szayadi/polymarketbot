@@ -48,7 +48,8 @@ class DutchBookStrategy(BaseStrategy):
         """Check if at least one market resolves within our time window."""
         cutoff = datetime.now(timezone.utc) + timedelta(days=self.cfg.max_days_to_resolve)
         for m in markets:
-            for field in ("expected_expiration_time", "close_time", "latest_expiration_time"):
+            for field in ("expected_expiration_time", "close_time", "latest_expiration_time",
+                          "expiration_time", "end_date_time", "settlement_timer_expiration_time"):
                 ts = m.get(field)
                 if ts:
                     try:

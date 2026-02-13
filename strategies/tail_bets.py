@@ -54,7 +54,8 @@ class TailBetsStrategy(BaseStrategy):
     def _resolves_soon(self, market: dict) -> bool:
         """Check if market resolves within our time window."""
         cutoff = datetime.now(timezone.utc) + timedelta(days=self.cfg.max_days_to_resolve)
-        for field in ("expected_expiration_time", "close_time", "latest_expiration_time"):
+        for field in ("expected_expiration_time", "close_time", "latest_expiration_time",
+                      "expiration_time", "end_date_time", "settlement_timer_expiration_time"):
             ts = market.get(field)
             if ts:
                 try:
@@ -71,7 +72,8 @@ class TailBetsStrategy(BaseStrategy):
     def _hours_to_resolve(self, market: dict) -> float:
         """Estimate hours until market resolves."""
         now = datetime.now(timezone.utc)
-        for field in ("expected_expiration_time", "close_time", "latest_expiration_time"):
+        for field in ("expected_expiration_time", "close_time", "latest_expiration_time",
+                      "expiration_time", "end_date_time", "settlement_timer_expiration_time"):
             ts = market.get(field)
             if ts:
                 try:
@@ -97,13 +99,16 @@ class TailBetsStrategy(BaseStrategy):
         if not self._resolves_soon(market):
             return None
 
-        # Get prices
+        # Get prices — Kalshi listing may not include bid/ask
         yes_bid = market.get("yes_bid")
         yes_ask = market.get("yes_ask")
-        if yes_bid is None or yes_ask is None:
-            return None
-        yes_bid = int(yes_bid)
-        yes_ask = int(yes_ask)
+        if yes_bid is not None and yes_ask is not None:
+            yes_bid = int(yes_bid)
+            yes_ask = int(yes_ask)
+        else:
+            yes_bid, yes_ask = self.client.get_best_bid_ask(ticker)
+            if yes_bid is None or yes_ask is None:
+                return None
 
         if yes_bid <= 0 or yes_ask <= 0 or yes_ask >= 100:
             return None
