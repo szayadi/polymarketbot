@@ -16,6 +16,7 @@ SURVIVAL DIRECTIVE:
   the survival floor ($1.00 default), ALL trading halts permanently.
 """
 
+import argparse
 import logging
 import signal
 import sys
@@ -256,6 +257,11 @@ def _handle_shutdown(signum, frame):
 # ── Main ──────────────────────────────────────────────────────────
 
 def main():
+    parser = argparse.ArgumentParser(description="Kalshi Trading Bot")
+    parser.add_argument("--reset", action="store_true",
+                        help="Clear all open positions and start fresh")
+    args = parser.parse_args()
+
     cfg = Config()
     _print_banner(cfg)
 
@@ -267,6 +273,16 @@ def main():
     client = KalshiClient(cfg)
     tracker = PositionTracker()
     learner = AdaptiveLearner()
+
+    # Handle --reset flag
+    if args.reset:
+        count = tracker.reset()
+        _print(f"  {YELLOW}RESET: Closed {count} open positions. Starting fresh.{RESET}")
+
+    # Auto-cleanup: close positions older than 14 days (definitely stale)
+    stale_closed = tracker.clear_stale(max_age_days=14)
+    if stale_closed:
+        _print(f"  {YELLOW}Cleaned {stale_closed} stale positions (>14 days old){RESET}")
     risk = RiskManager(cfg, tracker)
 
     # Check exchange status

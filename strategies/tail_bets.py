@@ -52,7 +52,11 @@ class TailBetsStrategy(BaseStrategy):
         return signals
 
     def _resolves_soon(self, market: dict) -> bool:
-        """Check if market resolves within our time window."""
+        """Check if market resolves within our time window.
+
+        PERMISSIVE: if no time field is found, accept the market.
+        Only reject if we can confirm it resolves too far in the future.
+        """
         cutoff = datetime.now(timezone.utc) + timedelta(days=self.cfg.max_days_to_resolve)
         for field in ("expected_expiration_time", "close_time", "latest_expiration_time",
                       "expiration_time", "end_date_time", "settlement_timer_expiration_time"):
@@ -65,9 +69,11 @@ class TailBetsStrategy(BaseStrategy):
                         dt = datetime.fromtimestamp(ts, tz=timezone.utc)
                     if dt <= cutoff:
                         return True
+                    else:
+                        return False
                 except (ValueError, TypeError, OSError):
                     continue
-        return False
+        return True
 
     def _hours_to_resolve(self, market: dict) -> float:
         """Estimate hours until market resolves."""

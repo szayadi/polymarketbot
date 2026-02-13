@@ -86,22 +86,31 @@ class MomentumStrategy(BaseStrategy):
         return signals
 
     def _resolves_soon(self, market: dict) -> bool:
-        """Check if market resolves within our time window."""
+        """Check if market resolves within our time window.
+
+        PERMISSIVE: if no time field is found, accept the market.
+        Only reject if we can confirm it resolves too far in the future.
+        """
         cutoff = datetime.now(timezone.utc) + timedelta(days=self.cfg.max_days_to_resolve)
+        found_any_time = False
         for field in ("expected_expiration_time", "close_time", "latest_expiration_time",
                       "expiration_time", "end_date_time", "settlement_timer_expiration_time"):
             ts = market.get(field)
             if ts:
+                found_any_time = True
                 try:
                     if isinstance(ts, str):
                         dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
                     else:
                         dt = datetime.fromtimestamp(ts, tz=timezone.utc)
                     if dt <= cutoff:
-                        return True
+                        return True  # Confirmed: resolves within window
+                    else:
+                        return False  # Confirmed: resolves too far out
                 except (ValueError, TypeError, OSError):
                     continue
-        return False
+        # No time field found — accept the market (don't silently reject)
+        return True
 
     def _hours_to_resolve(self, market: dict) -> float:
         """Estimate hours until market resolves. Returns 9999 if unknown."""

@@ -45,13 +45,19 @@ class DutchBookStrategy(BaseStrategy):
         return signals
 
     def _is_fast_resolving(self, markets: list[dict]) -> bool:
-        """Check if at least one market resolves within our time window."""
+        """Check if at least one market resolves within our time window.
+
+        PERMISSIVE: if no time field is found, accept the event.
+        Only reject if ALL markets confirm resolution is too far out.
+        """
         cutoff = datetime.now(timezone.utc) + timedelta(days=self.cfg.max_days_to_resolve)
+        found_any_time = False
         for m in markets:
             for field in ("expected_expiration_time", "close_time", "latest_expiration_time",
                           "expiration_time", "end_date_time", "settlement_timer_expiration_time"):
                 ts = m.get(field)
                 if ts:
+                    found_any_time = True
                     try:
                         if isinstance(ts, str):
                             dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
@@ -61,7 +67,8 @@ class DutchBookStrategy(BaseStrategy):
                             return True
                     except (ValueError, TypeError, OSError):
                         continue
-        return False
+        # If no time fields found at all, accept (don't reject blindly)
+        return not found_any_time
 
     def _has_volume(self, markets: list[dict]) -> bool:
         """Check if the event has meaningful trading volume."""

@@ -156,6 +156,47 @@ class PositionTracker:
         except Exception as e:
             logger.error("Failed to load state: %s", e)
 
+    def clear_stale(self, max_age_days: int = 14) -> int:
+        """Close positions older than max_age_days as stale.
+
+        Returns the number of positions closed.
+        """
+        now = datetime.now(timezone.utc)
+        closed = 0
+        for pos in self.positions:
+            if pos.status != "open":
+                continue
+            try:
+                entry_time = datetime.fromisoformat(pos.timestamp)
+                if entry_time.tzinfo is None:
+                    entry_time = entry_time.replace(tzinfo=timezone.utc)
+                age_days = (now - entry_time).total_seconds() / 86400.0
+                if age_days > max_age_days:
+                    pos.status = "closed"
+                    pos.pnl_cents = 0  # Unknown outcome — mark as break-even
+                    closed += 1
+                    logger.info("Cleared stale position: %s (%.0f days old)", pos.ticker, age_days)
+            except (ValueError, TypeError):
+                # Can't parse timestamp — close it as stale
+                pos.status = "closed"
+                pos.pnl_cents = 0
+                closed += 1
+                logger.info("Cleared stale position (bad timestamp): %s", pos.ticker)
+        if closed:
+            self.save()
+        return closed
+
+    def reset(self) -> int:
+        """Close ALL open positions (for fresh start). Returns count closed."""
+        count = sum(1 for p in self.positions if p.status == "open")
+        for pos in self.positions:
+            if pos.status == "open":
+                pos.status = "closed"
+                pos.pnl_cents = 0
+        self.daily_realized_pnl_cents = 0
+        self.save()
+        return count
+
     def summary(self) -> str:
         open_pos = self.get_open()
         exposure = self.get_exposure_dollars()
