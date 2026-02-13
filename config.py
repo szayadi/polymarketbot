@@ -37,7 +37,7 @@ class Config:
     # Time filters — fast-resolving markets only (7 days catches daily + weekly)
     max_days_to_resolve: int = int(os.getenv("MAX_DAYS_TO_RESOLVE", "7"))
     # Minimum 24h volume to consider a market (in contracts)
-    min_volume_24h: int = int(os.getenv("MIN_VOLUME_24H", "5"))
+    min_volume_24h: int = int(os.getenv("MIN_VOLUME_24H", "1"))
 
     poll_interval: int = int(os.getenv("POLL_INTERVAL", "10"))
     dry_run: bool = os.getenv("DRY_RUN", "1") == "1"

@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 # ── Aggressive thresholds for fast trading ──
 MIN_PRICE_MOVE_CENTS = 2          # Trigger on 2c moves (was 3)
-MIN_VOLUME_24H = 10               # Lower volume bar (was 50)
+MIN_VOLUME_24H = 1                # Any recent activity (was 10)
 PROFIT_TARGET_PCT = 0.08          # Take profits at 8% (was 15%)
 STOP_LOSS_PCT = 0.05              # Cut losses at 5% (was 8%)
 TRAILING_STOP_PCT = 0.03          # 3% trailing stop once profitable
