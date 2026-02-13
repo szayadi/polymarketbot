@@ -4,19 +4,18 @@ Buy contracts that are almost certain to resolve in our favor:
 - YES contracts priced 95-99c (near-certain YES outcome)
 - NO contracts priced 1-5c (buy YES's complement cheaply)
 
-The edge: collect the remaining 1-5 cents per contract on resolution.
-With many small bets, this compounds into reliable returns.
+Now filtered to only trade markets resolving soon with real volume.
 """
 
 import logging
+from datetime import datetime, timezone, timedelta
 from strategies.base import BaseStrategy
 
 logger = logging.getLogger(__name__)
 
-# Thresholds
-MAX_YES_PRICE_FOR_NO_BET = 5     # Buy NO when YES <= 5c (NO is 95c+)
-MIN_YES_PRICE_FOR_YES_BET = 95   # Buy YES when YES >= 95c
-MIN_LIQUIDITY_CENTS = 50000      # $500 minimum liquidity
+MAX_YES_PRICE_FOR_NO_BET = 5
+MIN_YES_PRICE_FOR_YES_BET = 95
+MIN_LIQUIDITY_CENTS = 50000
 
 
 class TailBetsStrategy(BaseStrategy):
@@ -27,7 +26,7 @@ class TailBetsStrategy(BaseStrategy):
         signals = []
 
         try:
-            markets = self.client.get_all_markets(status="open", max_pages=3)
+            markets = self.client.get_all_markets(status="open", max_pages=5)
         except Exception as e:
             logger.error("[tail_bets] Failed to fetch markets: %s", e)
             return signals
@@ -46,11 +45,32 @@ class TailBetsStrategy(BaseStrategy):
         logger.info("[tail_bets] Found %d signals", len(signals))
         return signals
 
+    def _resolves_soon(self, market: dict) -> bool:
+        """Check if market resolves within our time window."""
+        cutoff = datetime.now(timezone.utc) + timedelta(days=self.cfg.max_days_to_resolve)
+        for field in ("expected_expiration_time", "close_time", "latest_expiration_time"):
+            ts = market.get(field)
+            if ts:
+                try:
+                    if isinstance(ts, str):
+                        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                    else:
+                        dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+                    if dt <= cutoff:
+                        return True
+                except (ValueError, TypeError, OSError):
+                    continue
+        return False
+
     def _evaluate_market(self, market: dict) -> dict | None:
         """Check if a market qualifies for a tail bet."""
         ticker = market.get("ticker", "")
         status = market.get("status", "")
         if status not in ("open", "active"):
+            return None
+
+        # Time filter
+        if not self._resolves_soon(market):
             return None
 
         # Get prices
@@ -61,22 +81,16 @@ class TailBetsStrategy(BaseStrategy):
         yes_bid = int(yes_bid)
         yes_ask = int(yes_ask)
 
-        # Skip if no reasonable pricing
         if yes_bid <= 0 or yes_ask <= 0 or yes_ask >= 100:
             return None
 
         # Check liquidity
-        liquidity = market.get("liquidity", 0)
-        if liquidity is not None:
-            liquidity = int(liquidity)
-        else:
-            liquidity = 0
-        # Also check volume as proxy
+        liquidity = int(market.get("liquidity", 0) or 0)
         volume = int(market.get("volume", 0) or 0)
-        if liquidity < MIN_LIQUIDITY_CENTS and volume < MIN_LIQUIDITY_CENTS:
+        vol24 = int(market.get("volume_24h", 0) or 0)
+        if liquidity < MIN_LIQUIDITY_CENTS and volume < MIN_LIQUIDITY_CENTS and vol24 < self.cfg.min_volume_24h:
             return None
 
-        # Already have a position?
         if self.tracker.has_position(ticker):
             return None
 
@@ -85,21 +99,18 @@ class TailBetsStrategy(BaseStrategy):
         series_ticker = market.get("series_ticker", "")
         question = market.get("yes_sub_title", market.get("title", ticker))
 
-        # Case 1: YES is very cheap → buy NO (the NO side is near-certain)
+        # Case 1: YES is very cheap → buy NO
         if yes_ask <= MAX_YES_PRICE_FOR_NO_BET:
-            # Buy NO at (100 - yes_bid) cents
             no_price = 100 - yes_bid
             if no_price >= 100 or no_price <= 0:
                 return None
 
-            # Edge: payout $1 - cost, minus fee
             fee = self.client.calc_taker_fee(1, no_price)
             edge = (100 - no_price - fee) / no_price
 
             if edge < self.get_min_edge():
                 return None
 
-            # How many contracts?
             max_bet_cents = int(self.cfg.max_bet_size * 100)
             count = max(1, max_bet_cents // no_price)
 
@@ -118,7 +129,7 @@ class TailBetsStrategy(BaseStrategy):
                 "series_ticker": series_ticker,
             }
 
-        # Case 2: YES is very expensive → buy YES (near-certain YES outcome)
+        # Case 2: YES is very expensive → buy YES
         if yes_bid >= MIN_YES_PRICE_FOR_YES_BET:
             buy_price = yes_ask
             if buy_price >= 100 or buy_price <= 0:

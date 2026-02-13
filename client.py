@@ -218,6 +218,12 @@ class KalshiClient:
                                params={"limit": limit}, auth=False)
         return result.get("trades") if result else None
 
+    def get_market_history(self, ticker: str, limit: int = 100) -> Optional[list]:
+        """Get trade history for momentum analysis."""
+        result = self._request("GET", f"/markets/{ticker}/trades",
+                               params={"limit": limit}, auth=False)
+        return result.get("trades") if result else None
+
     # ── Portfolio ────────────────────────────────────────────────
 
     def get_balance(self) -> Optional[int]:

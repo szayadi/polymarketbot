@@ -1,27 +1,26 @@
 #!/usr/bin/env python3
 """Kalshi Trading Bot — Self-Preserving Automated Trader.
 
-Three strategies focused on guaranteed/low-risk profit:
-  1. Dutch Book Arbitrage — mathematically guaranteed profit on mispriced
-     multi-outcome events
-  2. Tail Bets — buy near-certain outcomes (95-99%) for small reliable gains
+Four strategies focused on fast, profitable trades:
+  1. Dutch Book Arbitrage — guaranteed profit on mispriced multi-outcome events
+  2. Tail Bets — buy near-certain outcomes for reliable gains
   3. Spread Capture — place maker orders on both sides of wide spreads
+  4. Momentum — ride price moves on high-volume, fast-resolving markets
+
+All strategies filter to SHORT-TERM markets only (default 30 days max).
+The bot learns from every outcome and adapts its behavior.
 
 SURVIVAL DIRECTIVE:
   The bot's #1 priority is staying alive. If the balance ever drops below
   the survival floor ($1.00 default), ALL trading halts permanently.
   It grows aggressively when winning, shrinks defensively when losing.
-
-Usage:
-    cp .env.example .env   # Configure API keys
-    pip install -r requirements.txt
-    python main.py         # Starts in DRY RUN (demo) mode
 """
 
 import logging
 import signal
 import sys
 import time
+from datetime import datetime, timezone
 
 from config import Config
 from client import KalshiClient
@@ -31,6 +30,7 @@ from risk import RiskManager
 from strategies.dutch_book import DutchBookStrategy
 from strategies.tail_bets import TailBetsStrategy
 from strategies.spread import SpreadStrategy
+from strategies.momentum import MomentumStrategy
 
 # ── Logging ──────────────────────────────────────────────────────
 
@@ -61,15 +61,17 @@ def main():
     mode = "DRY RUN" if cfg.dry_run else "LIVE"
     env_label = cfg.env.upper()
     logger.info("=" * 60)
-    logger.info("  Kalshi Trading Bot")
+    logger.info("  Kalshi Trading Bot v2")
     logger.info("  Environment: %s | Mode: %s", env_label, mode)
     logger.info("  Bankroll: $%.2f | Max bet: $%.2f", cfg.bankroll, cfg.max_bet_size)
     logger.info("  Min edge: %.1f%% | Survival floor: $%.2f",
                 cfg.min_edge * 100, cfg.survival_floor)
-    logger.info("  Strategies: DUTCH=%s  TAIL=%s  SPREAD=%s",
+    logger.info("  Max resolve time: %d days | Min 24h volume: %d",
+                cfg.max_days_to_resolve, cfg.min_volume_24h)
+    logger.info("  Strategies: DUTCH=%s  TAIL=%s  SPREAD=%s  MOMENTUM=%s",
                 cfg.strategy_dutch_book, cfg.strategy_tail_bets,
-                cfg.strategy_spread)
-    logger.info("  Adaptive learning: ENABLED")
+                cfg.strategy_spread, cfg.strategy_momentum)
+    logger.info("  Adaptive learning: ENABLED (fast decay)")
     logger.info("=" * 60)
 
     if not cfg.api_key_id and not cfg.dry_run:
@@ -100,15 +102,19 @@ def main():
         logger.info("Learner: %d historical trades", len(learner.trades))
         logger.info("\n%s", learner.get_report())
 
-    # Build strategy list
+    # Build strategy list — priority order
     strategies = []
-    # Dutch book FIRST — it's guaranteed profit, highest priority
+    momentum_strategy = None
+
     if cfg.strategy_dutch_book:
         strategies.append(DutchBookStrategy(client, cfg, risk, tracker, learner))
     if cfg.strategy_tail_bets:
         strategies.append(TailBetsStrategy(client, cfg, risk, tracker, learner))
     if cfg.strategy_spread:
         strategies.append(SpreadStrategy(client, cfg, risk, tracker, learner))
+    if cfg.strategy_momentum:
+        momentum_strategy = MomentumStrategy(client, cfg, risk, tracker, learner)
+        strategies.append(momentum_strategy)
 
     if not strategies:
         logger.error("No strategies enabled")
@@ -123,7 +129,7 @@ def main():
 
     # ── Main loop ────────────────────────────────────────────────
     cycle = 0
-    REPORT_EVERY = 20
+    REPORT_EVERY = 10  # Report more frequently
 
     while not _shutdown:
         cycle += 1
@@ -134,7 +140,10 @@ def main():
         if balance is not None:
             cfg.bankroll = balance
             risk.update_balance(balance)
-            logger.info("Balance: $%.2f", balance)
+            drawdown = risk.get_drawdown_pct()
+            growth = risk.get_growth_factor()
+            logger.info("Balance: $%.2f | Growth: %.2fx | Drawdown: %.1f%%",
+                        balance, growth, drawdown * 100)
 
         # Halt check
         halted, reason = risk.is_halted()
@@ -145,6 +154,12 @@ def main():
                 break
             _sleep(cfg.poll_interval * 4)
             continue
+
+        # Check momentum exit signals (profit target / stop loss)
+        if momentum_strategy:
+            exits = momentum_strategy.check_exits()
+            for exit_sig in exits:
+                logger.info("EXIT SIGNAL: %s", exit_sig["reason"])
 
         # Run strategies in priority order
         total_signals = 0
@@ -208,7 +223,6 @@ def _check_settlements(client: KalshiClient, tracker: PositionTracker,
         if pos.ticker not in settled_tickers:
             continue
 
-        # Find the settlement record
         for s in settlements:
             if s.get("ticker") != pos.ticker:
                 continue
@@ -217,12 +231,19 @@ def _check_settlements(client: KalshiClient, tracker: PositionTracker,
             cost_cents = pos.cost_cents
             pnl_cents = revenue_cents - cost_cents
 
-            # Determine exit price
             result = s.get("market_result", "")
             if pos.side == "yes":
                 exit_price = 100 if result == "yes" else 0
             else:
                 exit_price = 100 if result == "no" else 0
+
+            # Calculate hold time
+            hold_hours = 0.0
+            try:
+                entry_time = datetime.fromisoformat(pos.timestamp)
+                hold_hours = (datetime.now(timezone.utc) - entry_time).total_seconds() / 3600.0
+            except (ValueError, TypeError):
+                pass
 
             tracker.close(pos.ticker, pnl_cents, exit_price)
 
@@ -238,11 +259,12 @@ def _check_settlements(client: KalshiClient, tracker: PositionTracker,
                 edge_predicted=pos.edge_predicted,
                 category="",
                 question=pos.question,
+                hold_time_hours=hold_hours,
             )
 
-            logger.info("SETTLED: %s %s | entry=%dc exit=%dc | PnL=%dc ($%.2f)",
+            logger.info("SETTLED: %s %s | entry=%dc exit=%dc | PnL=%dc ($%.2f) | hold=%.1fh",
                          pos.strategy, pos.ticker, pos.entry_price_cents,
-                         exit_price, pnl_cents, pnl_cents / 100.0)
+                         exit_price, pnl_cents, pnl_cents / 100.0, hold_hours)
             break
 
 

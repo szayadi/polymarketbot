@@ -32,6 +32,12 @@ class Config:
     strategy_dutch_book: bool = os.getenv("STRATEGY_DUTCH_BOOK", "1") == "1"
     strategy_tail_bets: bool = os.getenv("STRATEGY_TAIL_BETS", "1") == "1"
     strategy_spread: bool = os.getenv("STRATEGY_SPREAD", "1") == "1"
+    strategy_momentum: bool = os.getenv("STRATEGY_MOMENTUM", "1") == "1"
+
+    # Time filters — only trade markets resolving within this many days
+    max_days_to_resolve: int = int(os.getenv("MAX_DAYS_TO_RESOLVE", "30"))
+    # Minimum 24h volume to consider a market (in contracts)
+    min_volume_24h: int = int(os.getenv("MIN_VOLUME_24H", "50"))
 
     poll_interval: int = int(os.getenv("POLL_INTERVAL", "30"))
     dry_run: bool = os.getenv("DRY_RUN", "1") == "1"
