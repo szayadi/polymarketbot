@@ -63,14 +63,33 @@ class MomentumStrategy(BaseStrategy):
                                   ("bid", "ask", "price", "yes", "no"))}
             logger.info("[momentum] PRICE FIELDS: %s", price_fields)
 
-        # Filter to tradeable markets first
+        # Filter to tradeable markets first, with rejection counters
         candidates = []
-        for m in markets:
-            if self._is_candidate(m):
-                candidates.append(m)
+        reject_status = 0
+        reject_time = 0
+        reject_volume = 0
+        reject_position = 0
+        reject_pricing = 0
 
-        logger.info("[momentum] Scanning %d candidates (from %d markets)",
-                    len(candidates), len(markets))
+        for m in markets:
+            reason = self._is_candidate_debug(m)
+            if reason is None:
+                candidates.append(m)
+            elif reason == "status":
+                reject_status += 1
+            elif reason == "time":
+                reject_time += 1
+            elif reason == "volume":
+                reject_volume += 1
+            elif reason == "position":
+                reject_position += 1
+            elif reason == "pricing":
+                reject_pricing += 1
+
+        logger.info("[momentum] Scanning %d candidates (from %d markets) | "
+                    "rejected: status=%d time=%d volume=%d position=%d pricing=%d",
+                    len(candidates), len(markets),
+                    reject_status, reject_time, reject_volume, reject_position, reject_pricing)
 
         for market in candidates:
             try:
@@ -131,26 +150,29 @@ class MomentumStrategy(BaseStrategy):
                     continue
         return 9999.0
 
-    def _is_candidate(self, market: dict) -> bool:
-        """Quick filter before expensive analysis."""
+    def _is_candidate_debug(self, market: dict) -> str | None:
+        """Quick filter before expensive analysis.
+
+        Returns None if candidate passes, or a rejection reason string.
+        """
         status = market.get("status", "")
         if status not in ("open", "active"):
-            return False
+            return "status"
 
         # Must resolve soon
         if not self._resolves_soon(market):
-            return False
+            return "time"
 
         # Must have volume — lowered threshold
         vol24 = int(market.get("volume_24h", 0) or 0)
         volume = int(market.get("volume", 0) or 0)
         if vol24 < MIN_VOLUME_24H and volume < self.cfg.min_volume_24h:
-            return False
+            return "volume"
 
         # Skip if already holding
         ticker = market.get("ticker", "")
         if self.tracker.has_position(ticker):
-            return False
+            return "position"
 
         # Need reasonable pricing (avoid deep extremes)
         # Kalshi market listing may not include bid/ask — fetch from orderbook
@@ -162,14 +184,18 @@ class MomentumStrategy(BaseStrategy):
         else:
             yes_bid, yes_ask = self.client.get_best_bid_ask(ticker)
             if yes_bid is None or yes_ask is None:
-                return False
+                return "pricing"
         if yes_bid < 10 or yes_ask > 90:
-            return False
+            return "pricing"
         # Store back so _evaluate_market can use them
         market["yes_bid"] = yes_bid
         market["yes_ask"] = yes_ask
 
-        return True
+        return None
+
+    def _is_candidate(self, market: dict) -> bool:
+        """Quick filter before expensive analysis."""
+        return self._is_candidate_debug(market) is None
 
     def _evaluate_market(self, market: dict) -> dict | None:
         """Analyze recent trades for momentum signal."""
