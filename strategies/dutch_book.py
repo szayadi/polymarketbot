@@ -1,10 +1,11 @@
-"""Strategy 1: Dutch Book Arbitrage (GUARANTEED profit).
+"""Strategy 1: Aggressive Dutch Book Arbitrage.
 
 In multi-outcome events on Kalshi, all YES prices must sum to ~$1.00.
 When they don't, we can buy all outcomes and guarantee a profit.
 
-Now filtered to only trade events that resolve SOON (within max_days_to_resolve)
-and have real liquidity, so capital isn't locked up for years.
+AGGRESSIVE: Lowered min profit from 2% to 0.5% to capture more arbs.
+Most arbs on Kalshi are small (1-3%) — the old 2% threshold was missing them.
+Scans more pages and prioritizes fast-resolving events.
 """
 
 import logging
@@ -14,7 +15,7 @@ from strategies.base import BaseStrategy
 
 logger = logging.getLogger(__name__)
 
-MIN_ARB_PROFIT_PCT = 0.02
+MIN_ARB_PROFIT_PCT = 0.005  # 0.5% min profit (was 2%) — catch more arbs
 
 
 class DutchBookStrategy(BaseStrategy):
@@ -25,7 +26,7 @@ class DutchBookStrategy(BaseStrategy):
         signals = []
 
         try:
-            events = self.client.get_all_events(status="open", max_pages=5)
+            events = self.client.get_all_events(status="open", max_pages=8)
         except Exception as e:
             logger.error("[dutch_book] Failed to fetch events: %s", e)
             return signals
@@ -47,13 +48,11 @@ class DutchBookStrategy(BaseStrategy):
         """Check if at least one market resolves within our time window."""
         cutoff = datetime.now(timezone.utc) + timedelta(days=self.cfg.max_days_to_resolve)
         for m in markets:
-            # Check expected_expiration_time, close_time, latest_expiration_time
             for field in ("expected_expiration_time", "close_time", "latest_expiration_time"):
                 ts = m.get(field)
                 if ts:
                     try:
                         if isinstance(ts, str):
-                            # Handle ISO format
                             dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
                         else:
                             dt = datetime.fromtimestamp(ts, tz=timezone.utc)

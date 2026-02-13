@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
-"""Kalshi Trading Bot — Self-Preserving Automated Trader.
+"""Kalshi Trading Bot — Aggressive Fast-Resolution Trader.
 
-Four strategies focused on fast, profitable trades:
-  1. Dutch Book Arbitrage — guaranteed profit on mispriced multi-outcome events
-  2. Tail Bets — buy near-certain outcomes for reliable gains
-  3. Spread Capture — place maker orders on both sides of wide spreads
-  4. Momentum — ride price moves on high-volume, fast-resolving markets
+Four strategies optimized for DAILY profits on fast-resolving markets:
+  1. Dutch Book Arbitrage — capture even 0.5% arbs (lowered from 2%)
+  2. Tail Bets — widened to 85/15 bands for 5-10x more opportunities
+  3. Spread Capture — tighter spreads, 60s stale timeout, wider price range
+  4. Momentum — 8% profit target, 5% stop loss, trailing stop, urgency boost
 
-All strategies filter to SHORT-TERM markets only (default 30 days max).
-The bot learns from every outcome and adapts its behavior.
+DEFAULT: Only markets resolving within 3 DAYS (not 30).
+Polls every 10 seconds. Deploys 85% of capital (15% reserve).
+15% max bet per trade. 30% max per market. 25% daily loss cap.
 
 SURVIVAL DIRECTIVE:
   The bot's #1 priority is staying alive. If the balance ever drops below
   the survival floor ($1.00 default), ALL trading halts permanently.
-  It grows aggressively when winning, shrinks defensively when losing.
 """
 
 import logging
@@ -61,7 +61,7 @@ def main():
     mode = "DRY RUN" if cfg.dry_run else "LIVE"
     env_label = cfg.env.upper()
     logger.info("=" * 60)
-    logger.info("  Kalshi Trading Bot v2")
+    logger.info("  Kalshi Trading Bot v3 — AGGRESSIVE MODE")
     logger.info("  Environment: %s | Mode: %s", env_label, mode)
     logger.info("  Bankroll: $%.2f | Max bet: $%.2f", cfg.bankroll, cfg.max_bet_size)
     logger.info("  Min edge: %.1f%% | Survival floor: $%.2f",
@@ -71,6 +71,8 @@ def main():
     logger.info("  Strategies: DUTCH=%s  TAIL=%s  SPREAD=%s  MOMENTUM=%s",
                 cfg.strategy_dutch_book, cfg.strategy_tail_bets,
                 cfg.strategy_spread, cfg.strategy_momentum)
+    logger.info("  Cash reserve: %.0f%% | Daily loss cap: %.0f%%",
+                cfg.cash_reserve_pct * 100, cfg.daily_loss_cap_pct * 100)
     logger.info("  Adaptive learning: ENABLED (fast decay)")
     logger.info("=" * 60)
 
@@ -129,7 +131,7 @@ def main():
 
     # ── Main loop ────────────────────────────────────────────────
     cycle = 0
-    REPORT_EVERY = 10  # Report more frequently
+    REPORT_EVERY = 5  # Report every 5 cycles for fast feedback
 
     while not _shutdown:
         cycle += 1

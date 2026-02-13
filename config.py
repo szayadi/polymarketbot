@@ -19,13 +19,13 @@ class Config:
     env: str = os.getenv("KALSHI_ENV", "demo")
 
     bankroll: float = float(os.getenv("BANKROLL", "10.0"))
-    max_bet_fraction: float = float(os.getenv("MAX_BET_FRACTION", "0.05"))
-    min_edge: float = float(os.getenv("MIN_EDGE", "0.03"))
+    max_bet_fraction: float = float(os.getenv("MAX_BET_FRACTION", "0.15"))
+    min_edge: float = float(os.getenv("MIN_EDGE", "0.01"))
 
-    # Risk management
-    daily_loss_cap_pct: float = float(os.getenv("DAILY_LOSS_CAP_PCT", "0.15"))
-    cash_reserve_pct: float = float(os.getenv("CASH_RESERVE_PCT", "0.40"))
-    max_market_exposure_pct: float = float(os.getenv("MAX_MARKET_EXPOSURE_PCT", "0.15"))
+    # Risk management — aggressive capital deployment
+    daily_loss_cap_pct: float = float(os.getenv("DAILY_LOSS_CAP_PCT", "0.25"))
+    cash_reserve_pct: float = float(os.getenv("CASH_RESERVE_PCT", "0.15"))
+    max_market_exposure_pct: float = float(os.getenv("MAX_MARKET_EXPOSURE_PCT", "0.30"))
     survival_floor: float = float(os.getenv("SURVIVAL_FLOOR", "1.00"))
 
     # Strategy toggles
@@ -34,12 +34,12 @@ class Config:
     strategy_spread: bool = os.getenv("STRATEGY_SPREAD", "1") == "1"
     strategy_momentum: bool = os.getenv("STRATEGY_MOMENTUM", "1") == "1"
 
-    # Time filters — only trade markets resolving within this many days
-    max_days_to_resolve: int = int(os.getenv("MAX_DAYS_TO_RESOLVE", "30"))
+    # Time filters — AGGRESSIVE: only fast-resolving markets (1-3 days)
+    max_days_to_resolve: int = int(os.getenv("MAX_DAYS_TO_RESOLVE", "3"))
     # Minimum 24h volume to consider a market (in contracts)
-    min_volume_24h: int = int(os.getenv("MIN_VOLUME_24H", "50"))
+    min_volume_24h: int = int(os.getenv("MIN_VOLUME_24H", "25"))
 
-    poll_interval: int = int(os.getenv("POLL_INTERVAL", "30"))
+    poll_interval: int = int(os.getenv("POLL_INTERVAL", "10"))
     dry_run: bool = os.getenv("DRY_RUN", "1") == "1"
 
     @property

@@ -1,10 +1,12 @@
-"""Risk manager with self-preservation and dynamic scaling.
+"""Aggressive risk manager with survival floor.
 
-The bot's PRIMARY directive is survival. If the balance approaches zero,
-all trading halts. Every trade must pass through risk gates.
+The bot's PRIMARY directive is still survival — if balance hits the floor,
+trading halts. But everything else is loosened for aggressive capital deployment:
 
-Dynamic scaling: as the bankroll grows, bet sizes grow proportionally.
-When losing, the bot shrinks aggressively to protect capital.
+- Higher growth factor cap (3x vs 2x)
+- Drawdown tolerance raised to 35% (was 20%)
+- Event exposure limit raised to 3x market (was 2x)
+- Faster shrink floor lowered (0.2x vs 0.3x)
 """
 
 import logging
@@ -16,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 class RiskManager:
-    """Pre-trade risk checks. Prioritizes survival above all else."""
+    """Pre-trade risk checks. Survival first, then deploy capital aggressively."""
 
     def __init__(self, cfg: Config, tracker: PositionTracker):
         self.cfg = cfg
@@ -28,7 +30,6 @@ class RiskManager:
 
     def update_balance(self, balance_dollars: float) -> None:
         """Update the live balance, track high-water mark, check survival."""
-        # Track peak for drawdown calculation
         if balance_dollars > self._peak_bankroll:
             self._peak_bankroll = balance_dollars
 
@@ -41,20 +42,20 @@ class RiskManager:
             logger.critical(self._halt_reason)
 
     def get_growth_factor(self) -> float:
-        """Scale bets based on bankroll growth from initial.
+        """Scale bets based on bankroll growth — AGGRESSIVE scaling.
 
-        If bankroll doubled: bet 1.5x. If bankroll halved: bet 0.5x.
-        This compounds winners and protects during drawdowns.
+        If bankroll doubled: bet ~1.4x. If tripled: bet ~1.7x. Cap at 3x.
+        When losing, shrink aggressively to protect what's left.
         """
         if self._initial_bankroll <= 0:
             return 1.0
         ratio = self.cfg.bankroll / self._initial_bankroll
-        # Square root scaling — aggressive but not reckless
         if ratio >= 1.0:
-            return min(2.0, ratio ** 0.5)
+            # Cap at 3x (was 2x) — let winners ride harder
+            return min(3.0, ratio ** 0.5)
         else:
-            # Shrink faster when losing
-            return max(0.3, ratio ** 1.5)
+            # Shrink faster when losing, floor at 0.2x (was 0.3x)
+            return max(0.2, ratio ** 1.5)
 
     def get_drawdown_pct(self) -> float:
         """Current drawdown from peak as a percentage."""
@@ -79,10 +80,9 @@ class RiskManager:
             return False, (f"Cost {cost_cents}c exceeds max bet "
                            f"{max_bet_cents}c (growth={growth:.2f}x)")
 
-        # 2. Drawdown protection — reduce exposure during drawdowns
+        # 2. Drawdown protection — only kicks in at 35% (was 20%)
         drawdown = self.get_drawdown_pct()
-        if drawdown > 0.20:
-            # More than 20% drawdown from peak — reduce max exposure
+        if drawdown > 0.35:
             max_bet_cents = int(max_bet_cents * 0.5)
             if cost_cents > max_bet_cents:
                 return False, f"Drawdown protection: {drawdown:.0%} from peak"
@@ -94,10 +94,10 @@ class RiskManager:
             return False, (f"Market exposure {(current_exp + cost_cents)}c "
                            f"would exceed {max_exp_cents}c")
 
-        # 4. Event exposure
+        # 4. Event exposure — 3x market limit (was 2x)
         if event_ticker:
             event_exp = self.tracker.get_event_exposure_cents(event_ticker)
-            if event_exp + cost_cents > max_exp_cents * 2:
+            if event_exp + cost_cents > max_exp_cents * 3:
                 return False, f"Event exposure would exceed limit"
 
         # 5. Daily loss cap
@@ -129,9 +129,9 @@ class RiskManager:
         max_cost_cents = int(self.cfg.max_bet_size * 100 * growth)
         max_count_by_bet = max_cost_cents // cost_per
 
-        # Drawdown reduction
+        # Drawdown reduction — only at 35%+ (was 20%)
         drawdown = self.get_drawdown_pct()
-        if drawdown > 0.20:
+        if drawdown > 0.35:
             max_count_by_bet = max(1, max_count_by_bet // 2)
 
         # Don't exceed market exposure

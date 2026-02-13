@@ -1,12 +1,13 @@
-"""Strategy 3: Spread Capture / Market Making.
+"""Strategy 3: Aggressive Spread Capture / Market Making.
 
 Places limit orders on both sides of the bid-ask spread.
 When both fill, the spread becomes profit.
 
-On Kalshi, maker orders earn rebates rather than paying fees,
-making this strategy fee-efficient.
-
-Now filtered to fast-resolving, high-volume markets only.
+AGGRESSIVE MODE:
+- Tighter minimum spread (3c vs 4c)
+- Wider price range (15-85 vs 20-80)
+- Fast stale cancellation (60s vs 5min)
+- Lower volume requirements
 """
 
 import logging
@@ -16,9 +17,13 @@ from strategies.base import BaseStrategy
 
 logger = logging.getLogger(__name__)
 
-MIN_SPREAD_CENTS = 4
-MIN_VOLUME = 1000
-STALE_ORDER_SECONDS = 300
+# ── AGGRESSIVE thresholds ──
+MIN_SPREAD_CENTS = 3              # Trade 3c+ spreads (was 4)
+MIN_VOLUME = 200                  # Lower volume bar (was 1000)
+STALE_ORDER_SECONDS = 60          # Cancel unfilled after 60s (was 300)
+MIN_NET_SPREAD = 1                # Capture even 1c net (was 2)
+PRICE_RANGE_LOW = 15              # Accept prices from 15c (was 20)
+PRICE_RANGE_HIGH = 85             # Accept prices up to 85c (was 80)
 
 
 class SpreadStrategy(BaseStrategy):
@@ -33,7 +38,7 @@ class SpreadStrategy(BaseStrategy):
         signals = []
 
         try:
-            markets = self.client.get_all_markets(status="open", max_pages=5)
+            markets = self.client.get_all_markets(status="open", max_pages=8)
         except Exception as e:
             logger.error("[spread] Failed to fetch markets: %s", e)
             return signals
@@ -79,7 +84,7 @@ class SpreadStrategy(BaseStrategy):
         if not self._resolves_soon(market):
             return []
 
-        # Check volume
+        # Check volume — lowered
         volume = int(market.get("volume", 0) or 0)
         vol24 = int(market.get("volume_24h", 0) or 0)
         if volume < MIN_VOLUME and vol24 < self.cfg.min_volume_24h:
@@ -101,14 +106,15 @@ class SpreadStrategy(BaseStrategy):
 
         mid = (yes_ask + yes_bid) / 2.0
 
-        if mid < 20 or mid > 80:
+        # Wider acceptable price range
+        if mid < PRICE_RANGE_LOW or mid > PRICE_RANGE_HIGH:
             return []
 
         our_bid = yes_bid + 1
         our_ask = yes_ask - 1
         our_spread = our_ask - our_bid
 
-        if our_spread < 2:
+        if our_spread < MIN_NET_SPREAD:
             return []
 
         net_profit_pct = our_spread / mid / 100.0
@@ -159,13 +165,13 @@ class SpreadStrategy(BaseStrategy):
         return signals
 
     def cleanup_stale_orders(self) -> None:
-        """Cancel stale unfilled spread orders."""
+        """Cancel stale unfilled spread orders — fast timeout."""
         now = time.time()
         stale = [t for t, placed in self._pending.items()
                  if now - placed > STALE_ORDER_SECONDS]
         for ticker in stale:
             self._pending.pop(ticker, None)
-            logger.info("[spread] Stale order timeout: %s", ticker)
+            logger.info("[spread] Stale order timeout (60s): %s", ticker)
 
     def execute(self, signals: list[dict]) -> list[dict]:
         results = super().execute(signals)
