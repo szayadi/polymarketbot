@@ -9,3 +9,5 @@ dist/
 build/
 logs/
 *.log
+state.json
+learned.json

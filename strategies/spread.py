@@ -113,11 +113,13 @@ class SpreadStrategy(BaseStrategy):
         fee_estimate = 0.02
         net_profit = our_spread - fee_estimate
 
-        if net_profit < self.cfg.min_edge:
+        if net_profit < self.get_min_edge():
             return signals
 
         # Size: half the max bet per side (we need capital for both legs)
         half_size = self.cfg.max_bet_size / 2.0
+
+        category = market.get("category", "")
 
         # Generate BUY signal (bid side)
         signals.append({
@@ -130,6 +132,9 @@ class SpreadStrategy(BaseStrategy):
             "reason": f"Spread BUY: bid@{our_bid:.4f} "
                       f"(spread={spread:.4f}, {spread_pct:.1%})",
             "question": question,
+            "category": category,
+            "spread": spread,
+            "liquidity": float(market.get("liquidity", 0) or 0),
         })
 
         # Generate SELL signal (ask side)
@@ -143,6 +148,9 @@ class SpreadStrategy(BaseStrategy):
             "reason": f"Spread SELL: ask@{our_ask:.4f} "
                       f"(spread={spread:.4f}, {spread_pct:.1%})",
             "question": question,
+            "category": category,
+            "spread": spread,
+            "liquidity": float(market.get("liquidity", 0) or 0),
         })
 
         return signals

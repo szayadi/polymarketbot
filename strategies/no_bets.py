@@ -101,7 +101,7 @@ class NoBetsStrategy(BaseStrategy):
         fee_estimate = 0.02
         edge = (1.0 - buy_price) - fee_estimate
 
-        if edge < self.cfg.min_edge:
+        if edge < self.get_min_edge():
             return None
 
         # Check that we're not already in this market
@@ -113,6 +113,8 @@ class NoBetsStrategy(BaseStrategy):
         question = market.get("question", market.get("title", "Unknown"))
         condition_id = market.get("condition_id", market.get("id", ""))
 
+        category = market.get("category", market.get("groupItemTitle", ""))
+
         return {
             "token_id": no_token_id,
             "side": "BUY",
@@ -123,4 +125,6 @@ class NoBetsStrategy(BaseStrategy):
             "reason": f"NO bet: YES@{yes_price:.2f} → buy NO@{buy_price:.4f} "
                       f"(edge {edge:.1%})",
             "question": question,
+            "category": category,
+            "liquidity": liquidity,
         }
