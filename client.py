@@ -61,7 +61,8 @@ class KalshiClient:
 
     def _sign(self, timestamp_ms: str, method: str, path: str) -> str:
         """Create RSA-PSS signature for a request."""
-        message = f"{timestamp_ms}{method.upper()}{path}"
+        # Kalshi requires the full path including /trade-api/v2 prefix
+        message = f"{timestamp_ms}{method.upper()}/trade-api/v2{path}"
         signature = self._private_key.sign(
             message.encode("utf-8"),
             padding.PSS(
