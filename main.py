@@ -146,7 +146,7 @@ def _print_cycle_header(cycle: int, balance: float, growth: float,
     pnl_str = _color_pnl(daily_pnl_cents)
     dd_str = _color_pct(-drawdown * 100) if drawdown > 0.01 else f"{DIM}0%{RESET}"
 
-    _print(f"{DIM}{'─' * 58}{RESET}")
+    _print(f"{DIM}{'-' * 58}{RESET}")
     _print(f"  {BOLD}Cycle {cycle}{RESET}  {DIM}{now}{RESET}"
            f"    {DIM}Balance{RESET} ${balance:.2f}"
            f"    {DIM}Daily{RESET} {pnl_str}"

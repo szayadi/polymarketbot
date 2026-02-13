@@ -135,7 +135,7 @@ class TailBetsStrategy(BaseStrategy):
         question = market.get("yes_sub_title", market.get("title", ticker))
         hours_left = self._hours_to_resolve(market)
 
-        # Case 1: YES is cheap → buy NO (high probability NO wins)
+        # Case 1: YES is cheap -> buy NO (high probability NO wins)
         if yes_ask <= MAX_YES_PRICE_FOR_NO_BET:
             no_price = 100 - yes_bid
             if no_price >= 100 or no_price <= 0:
@@ -165,7 +165,7 @@ class TailBetsStrategy(BaseStrategy):
                 "price_cents": no_price,
                 "count": count,
                 "edge": edge,
-                "reason": (f"Tail NO bet: YES@{yes_ask}c → "
+                "reason": (f"Tail NO bet: YES@{yes_ask}c -> "
                            f"buy NO@{no_price}c (edge {edge:.1%}) "
                            f"resolves={resolve_str}"),
                 "question": question,
@@ -173,7 +173,7 @@ class TailBetsStrategy(BaseStrategy):
                 "series_ticker": series_ticker,
             }
 
-        # Case 2: YES is expensive → buy YES (high probability YES wins)
+        # Case 2: YES is expensive -> buy YES (high probability YES wins)
         if yes_bid >= MIN_YES_PRICE_FOR_YES_BET:
             buy_price = yes_ask
             if buy_price >= 100 or buy_price <= 0:
@@ -203,7 +203,7 @@ class TailBetsStrategy(BaseStrategy):
                 "price_cents": buy_price,
                 "count": count,
                 "edge": edge,
-                "reason": (f"Tail YES bet: YES@{yes_ask}c → "
+                "reason": (f"Tail YES bet: YES@{yes_ask}c -> "
                            f"buy YES@{buy_price}c (edge {edge:.1%}) "
                            f"resolves={resolve_str}"),
                 "question": question,

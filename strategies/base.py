@@ -84,7 +84,7 @@ class BaseStrategy(ABC):
                     if confidence != 1.0:
                         original_edge = sig["edge"]
                         sig["edge"] *= confidence
-                        logger.info("[%s] RESEARCH: %s | confidence=%.2f | edge %.1f%% → %.1f%%",
+                        logger.info("[%s] RESEARCH: %s | confidence=%.2f | edge %.1f%% -> %.1f%%",
                                     self.name, research_reason, confidence,
                                     original_edge * 100, sig["edge"] * 100)
 
