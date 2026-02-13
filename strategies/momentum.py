@@ -175,9 +175,7 @@ class MomentumStrategy(BaseStrategy):
         if self.tracker.has_position(ticker):
             return "position"
 
-        # Need reasonable pricing (avoid deep extremes)
-        # Kalshi market listing often returns 0/0 — treat as missing and
-        # fetch from the live orderbook instead (capped to avoid hanging)
+        # Need some pricing data — fetch from orderbook if listing is 0/0
         yes_bid = int(market.get("yes_bid", 0) or 0)
         yes_ask = int(market.get("yes_ask", 0) or 0)
         if yes_bid <= 0 or yes_ask <= 0:
@@ -187,8 +185,6 @@ class MomentumStrategy(BaseStrategy):
             yes_bid, yes_ask = self.client.get_best_bid_ask(ticker)
             if yes_bid is None or yes_ask is None:
                 return "pricing"
-        if yes_bid < 5 or yes_ask > 95:
-            return "pricing"
         # Store back so _evaluate_market can use them
         market["yes_bid"] = yes_bid
         market["yes_ask"] = yes_ask
