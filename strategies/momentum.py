@@ -175,13 +175,11 @@ class MomentumStrategy(BaseStrategy):
             return "position"
 
         # Need reasonable pricing (avoid deep extremes)
-        # Kalshi market listing may not include bid/ask — fetch from orderbook
-        yes_bid = market.get("yes_bid")
-        yes_ask = market.get("yes_ask")
-        if yes_bid is not None and yes_ask is not None:
-            yes_bid = int(yes_bid)
-            yes_ask = int(yes_ask)
-        else:
+        # Kalshi market listing often returns 0/0 — treat as missing and
+        # fetch from the live orderbook instead
+        yes_bid = int(market.get("yes_bid", 0) or 0)
+        yes_ask = int(market.get("yes_ask", 0) or 0)
+        if yes_bid <= 0 or yes_ask <= 0:
             yes_bid, yes_ask = self.client.get_best_bid_ask(ticker)
             if yes_bid is None or yes_ask is None:
                 return "pricing"
